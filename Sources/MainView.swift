@@ -12,6 +12,8 @@ struct MainView: View {
     @State private var runningOnly = false
     @State private var editing: Project?
     @State private var editingAlias: Project?
+    @State private var creatingBranchFor: Project?
+    @State private var showingGitHistory = false
     @State private var showingImport = false
     @State private var confirmingRemoval = false
     @State private var available = true
@@ -66,6 +68,13 @@ struct MainView: View {
         }
         .sheet(item: $editing) { ProjectEditor(project: $0, model: model) }
         .sheet(item: $editingAlias) { ProjectAliasEditor(project: $0, model: model) }
+        .sheet(item: $creatingBranchFor) { project in
+            GitCreateBranchSheet(
+                project: project,
+                baseBranch: model.gitStatus(project.id)?.branch,
+                model: model
+            )
+        }
         .sheet(isPresented: $showingImport, onDismiss: model.cancelScan) {
             ImportSheet(model: model)
         }
@@ -77,13 +86,18 @@ struct MainView: View {
         }
         .onChange(of: selected?.path, initial: true) { _, _ in
             copiedPath = false
+            showingGitHistory = false
             pathCopyTask?.cancel()
             refreshFolderAvailability()
+            if let project = selected {
+                model.refreshGit(for: project)
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             refreshFolderAvailability()
             model.refreshInstalledIDEs()
             model.refreshTerminalTools()
+            model.refreshAllGit()
         }
         .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didMountNotification)) { _ in
             refreshFolderAvailability()
@@ -231,6 +245,7 @@ struct MainView: View {
                         ProjectRowView(
                             project: project,
                             phase: model.runState(project.id).phase,
+                            gitStatus: model.gitStatus(project.id),
                             selected: project.id == model.selection,
                             listFocused: sidebarFocus == .list,
                             onSelect: {
@@ -342,8 +357,12 @@ struct MainView: View {
 
     private func detail(_ project: Project) -> some View {
         let state = model.runState(project.id)
-        return VStack(alignment: .leading, spacing: 18) {
+        return VStack(alignment: .leading, spacing: 16) {
             header(project, state: state)
+
+            if let git = model.gitStatus(project.id) {
+                gitBar(project, status: git)
+            }
 
             configuration(project, state: state)
 
@@ -617,6 +636,187 @@ struct MainView: View {
                 model.alert = error.localizedDescription
             }
         }
+    }
+
+    private func gitBar(_ project: Project, status: GitRepositoryStatus) -> some View {
+        let busy = model.isGitBusy(project.id)
+        return HStack(spacing: 10) {
+            Menu {
+                Section("切换本地分支") {
+                    if status.branches.isEmpty {
+                        Text("暂无本地分支")
+                    } else {
+                        ForEach(status.branches, id: \.self) { branch in
+                            Button {
+                                if branch != status.branch || status.isDetached {
+                                    model.gitSwitchBranch(branch, for: project)
+                                }
+                            } label: {
+                                if branch == status.branch && !status.isDetached {
+                                    Label(branch, systemImage: "checkmark")
+                                } else {
+                                    Text(branch)
+                                }
+                            }
+                        }
+                    }
+                }
+                Divider()
+                Button {
+                    creatingBranchFor = project
+                } label: {
+                    Label("新建分支…", systemImage: "plus")
+                }
+            } label: {
+                HoverableControlSurface(size: .compact) {
+                    HStack(spacing: 5) {
+                        Image(systemName: "arrow.triangle.branch")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(LauncherPalette.actionInk)
+                        Text(status.branch)
+                            .font(.caption.monospaced().weight(.semibold))
+                            .lineLimit(1)
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 8.5, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .disabled(busy)
+            .fixedSize()
+            .help(status.upstream.map { "当前分支：\(status.branch)（跟踪 \($0)）" } ?? "当前分支：\(status.branch)")
+
+            if status.isDirty {
+                HStack(spacing: 5) {
+                    Circle()
+                        .fill(status.conflictedCount > 0 ? LauncherPalette.stop : LauncherPalette.warning)
+                        .frame(width: 6, height: 6)
+                    Text("\(status.changedCount) 处变更")
+                        .font(.caption.weight(.medium))
+                        .monospacedDigit()
+                }
+                .foregroundStyle(status.conflictedCount > 0 ? LauncherPalette.stop : LauncherPalette.warning)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3.5)
+                .background(
+                    status.conflictedCount > 0 ? LauncherPalette.stopFill : LauncherPalette.warningFill,
+                    in: Capsule()
+                )
+                .overlay {
+                    Capsule().strokeBorder(
+                        status.conflictedCount > 0 ? LauncherPalette.stopEdge : LauncherPalette.warningEdge
+                    )
+                }
+                .help(status.changeSummary)
+            } else {
+                HStack(spacing: 5) {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 9.5, weight: .bold))
+                    Text("工作区干净")
+                        .font(.caption.weight(.medium))
+                }
+                .foregroundStyle(LauncherPalette.running)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3.5)
+                .background(LauncherPalette.runningFill, in: Capsule())
+                .overlay { Capsule().strokeBorder(LauncherPalette.runningEdge) }
+            }
+
+            if status.ahead > 0 || status.behind > 0 {
+                HStack(spacing: 6) {
+                    if status.behind > 0 {
+                        Text("↓\(status.behind)")
+                            .foregroundStyle(LauncherPalette.warning)
+                    }
+                    if status.ahead > 0 {
+                        Text("↑\(status.ahead)")
+                            .foregroundStyle(LauncherPalette.actionInk)
+                    }
+                }
+                .font(.caption.monospaced().weight(.semibold))
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3.5)
+                .background(LauncherPalette.surfaceSubtle, in: Capsule())
+                .overlay { Capsule().strokeBorder(LauncherPalette.line) }
+                .help("落后远程 \(status.behind) 个提交，领先远程 \(status.ahead) 个提交")
+            }
+
+            if busy {
+                ProgressView()
+                    .controlSize(.small)
+            } else if let notice = model.gitNotices[project.id] {
+                Label(notice, systemImage: "checkmark.circle.fill")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(LauncherPalette.running)
+                    .lineLimit(1)
+                    .transition(.opacity)
+            }
+
+            Spacer(minLength: 4)
+
+            HStack(spacing: 6) {
+                Button {
+                    model.gitFetch(for: project)
+                } label: {
+                    Image(systemName: "arrow.triangle.2.circlepath")
+                }
+                .buttonStyle(ProjectActionStyle(size: .compact))
+                .disabled(busy)
+                .help("获取远程更新（git fetch）")
+                .accessibilityLabel("获取远程更新")
+
+                Button {
+                    model.gitPull(for: project)
+                } label: {
+                    Label("拉取", systemImage: "arrow.down")
+                }
+                .buttonStyle(ProjectActionStyle(size: .compact))
+                .disabled(busy)
+                .help(status.behind > 0 ? "拉取远程 \(status.behind) 个新提交（git pull）" : "拉取最新代码（git pull）")
+
+                Button {
+                    model.gitPush(for: project)
+                } label: {
+                    Label("推送", systemImage: "arrow.up")
+                }
+                .buttonStyle(ProjectActionStyle(size: .compact))
+                .disabled(busy || status.isDetached)
+                .help(status.ahead > 0 ? "推送 \(status.ahead) 个提交到远程（git push）" : "推送代码到远程（git push）")
+
+                Button {
+                    showingGitHistory.toggle()
+                } label: {
+                    Label("记录", systemImage: "clock.arrow.circlepath")
+                }
+                .buttonStyle(ProjectActionStyle(size: .compact))
+                .popover(isPresented: $showingGitHistory, arrowEdge: .bottom) {
+                    GitHistoryPopover(status: status)
+                }
+                .help("查看最近提交记录")
+
+                Button {
+                    model.refreshGit(for: project)
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .buttonStyle(ProjectActionStyle(size: .compact))
+                .disabled(busy)
+                .help("刷新 Git 状态")
+                .accessibilityLabel("刷新 Git 状态")
+            }
+            .focusEffectDisabled()
+        }
+        .padding(.horizontal, 13)
+        .padding(.vertical, 9)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(LauncherPalette.surface, in: RoundedRectangle(cornerRadius: 11))
+        .overlay {
+            RoundedRectangle(cornerRadius: 11).strokeBorder(LauncherPalette.line)
+        }
+        .shadow(color: LauncherPalette.cardShadow(colorScheme), radius: 5, y: 1.5)
+        .animation(.easeInOut(duration: 0.16), value: model.gitNotices[project.id])
     }
 
     private func configuration(_ project: Project, state: RunState) -> some View {
@@ -1040,6 +1240,7 @@ struct ProjectKindBadge: View {
 private struct ProjectRowView: View {
     let project: Project
     let phase: RunPhase
+    let gitStatus: GitRepositoryStatus?
     let selected: Bool
     let listFocused: Bool
     let onSelect: () -> Void
@@ -1061,8 +1262,22 @@ private struct ProjectRowView: View {
                         .lineLimit(1)
 
                     HStack(spacing: 5) {
-                        Text(parentFolder)
-                            .lineLimit(1)
+                        if let git = gitStatus {
+                            HStack(spacing: 3) {
+                                Image(systemName: "arrow.triangle.branch")
+                                    .font(.system(size: 9.5, weight: .medium))
+                                Text(git.branch)
+                                    .lineLimit(1)
+                                if git.isDirty {
+                                    Circle()
+                                        .fill(LauncherPalette.warning)
+                                        .frame(width: 5, height: 5)
+                                }
+                            }
+                        } else {
+                            Text(parentFolder)
+                                .lineLimit(1)
+                        }
                         if let port = project.launchPort {
                             Text("·")
                             Text(":\(port.formatted(.number.grouping(.never)))")

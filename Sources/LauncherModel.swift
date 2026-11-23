@@ -42,6 +42,9 @@ final class LauncherModel: ObservableObject {
     @Published private(set) var installedIDEs: [ProjectIDE] = []
     @Published private(set) var installedTerminals: [ProjectTerminal] = ProjectTerminal.installed()
     @Published private(set) var installedAICLIs: [ProjectAICLI] = []
+    @Published private(set) var gitStatuses: [UUID: GitRepositoryStatus] = [:]
+    @Published private(set) var gitBusy: Set<UUID> = []
+    @Published private(set) var gitNotices: [UUID: String] = [:]
     @Published var alert: String?
 
     private struct ActiveRun {
@@ -62,6 +65,8 @@ final class LauncherModel: ObservableObject {
     private var probe: ManagedProcess?
     private var scanTask: Task<ScanResult, Never>?
     private var scanID: UUID?
+    private var gitRefreshAllTask: Task<Void, Never>?
+    private var gitNoticeTasks: [UUID: Task<Void, Never>] = [:]
     private var refreshTimer: Timer?
     private var terminating = false
     private var terminateReply: (() -> Void)?
@@ -78,6 +83,7 @@ final class LauncherModel: ObservableObject {
         refreshNVM()
         refreshInstalledIDEs()
         refreshTerminalTools()
+        refreshAllGit()
     }
 
     var projects: [Project] {
@@ -124,6 +130,138 @@ final class LauncherModel: ObservableObject {
         }
     }
 
+    func gitStatus(_ id: UUID) -> GitRepositoryStatus? { gitStatuses[id] }
+    func isGitBusy(_ id: UUID) -> Bool { gitBusy.contains(id) }
+
+    func refreshGit(for project: Project) {
+        let projectID = project.id
+        let path = project.path
+        Task.detached(priority: .utility) {
+            let status = ProjectGit.inspect(at: path)
+            await MainActor.run { [weak self] in
+                guard let self,
+                      self.saved.projects.contains(where: { $0.id == projectID && $0.path == path }) else { return }
+                if self.gitStatuses[projectID] != status {
+                    self.gitStatuses[projectID] = status
+                }
+            }
+        }
+    }
+
+    func refreshAllGit() {
+        gitRefreshAllTask?.cancel()
+        let selectedID = selection
+        let ordered = projects.sorted { lhs, rhs in
+            if lhs.id == selectedID { return true }
+            if rhs.id == selectedID { return false }
+            return false
+        }
+        let targets = ordered.map { ($0.id, $0.path) }
+        guard !targets.isEmpty else { return }
+
+        gitRefreshAllTask = Task.detached(priority: .utility) { [weak self] in
+            for (projectID, path) in targets {
+                if Task.isCancelled { break }
+                let status = ProjectGit.inspect(at: path)
+                await MainActor.run { [weak self] in
+                    guard let self,
+                          self.saved.projects.contains(where: { $0.id == projectID && $0.path == path }) else { return }
+                    if self.gitStatuses[projectID] != status {
+                        self.gitStatuses[projectID] = status
+                    }
+                }
+            }
+        }
+    }
+
+    func gitSwitchBranch(_ branch: String, for project: Project) {
+        Task {
+            _ = await runGitAction(for: project, successNotice: "已切换到 \(branch)") {
+                try ProjectGit.switchBranch(branch, at: project.path)
+            }
+        }
+    }
+
+    func gitCreateBranch(_ name: String, for project: Project) async -> Bool {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return await runGitAction(for: project, successNotice: "已创建并切换到 \(trimmed)") {
+            try ProjectGit.createBranch(trimmed, at: project.path)
+        }
+    }
+
+    func gitFetch(for project: Project) {
+        Task {
+            _ = await runGitAction(for: project, successNotice: "已同步远程引用") {
+                try ProjectGit.fetch(at: project.path)
+            }
+        }
+    }
+
+    func gitPull(for project: Project) {
+        Task {
+            _ = await runGitAction(for: project, successNotice: "已拉取最新代码") {
+                try ProjectGit.pull(at: project.path)
+            }
+        }
+    }
+
+    func gitPush(for project: Project) {
+        let currentStatus = gitStatuses[project.id]
+        Task {
+            _ = await runGitAction(for: project, successNotice: "已推送到远程") {
+                try ProjectGit.push(at: project.path, currentStatus: currentStatus)
+            }
+        }
+    }
+
+    private func runGitAction(
+        for project: Project,
+        successNotice: String,
+        operation: @escaping @Sendable () throws -> Void
+    ) async -> Bool {
+        guard !gitBusy.contains(project.id) else { return false }
+        gitBusy.insert(project.id)
+        defer { gitBusy.remove(project.id) }
+
+        let path = project.path
+        do {
+            try await Task.detached(priority: .userInitiated) {
+                try operation()
+            }.value
+            let updated = await Task.detached(priority: .userInitiated) {
+                ProjectGit.inspect(at: path)
+            }.value
+            if saved.projects.contains(where: { $0.id == project.id && $0.path == path }) {
+                gitStatuses[project.id] = updated
+                showGitNotice(successNotice, for: project.id)
+            }
+            return true
+        } catch {
+            let updated = await Task.detached(priority: .utility) {
+                ProjectGit.inspect(at: path)
+            }.value
+            if saved.projects.contains(where: { $0.id == project.id && $0.path == path }) {
+                gitStatuses[project.id] = updated
+            }
+            alert = error.localizedDescription
+            return false
+        }
+    }
+
+    private func showGitNotice(_ message: String, for id: UUID) {
+        gitNoticeTasks[id]?.cancel()
+        gitNotices[id] = message
+        gitNoticeTasks[id] = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(2.5))
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                if self?.gitNotices[id] == message {
+                    self?.gitNotices[id] = nil
+                }
+            }
+        }
+    }
+
     func refreshInstalledVersions() {
         versions = installation?.installedVersions ?? []
     }
@@ -162,6 +300,7 @@ final class LauncherModel: ObservableObject {
         next.projects.append(contentsOf: new)
         guard commit(next) else { return false }
         selection = new.first?.id
+        for project in new { refreshGit(for: project) }
         return true
     }
 
@@ -179,7 +318,11 @@ final class LauncherModel: ObservableObject {
         var updated = project
         updated.path = candidate.path
         updated.nodeRequirement = candidate.nodeRequirement
-        if update(updated) { runs[project.id] = nil }
+        if update(updated) {
+            runs[project.id] = nil
+            gitStatuses[project.id] = nil
+            refreshGit(for: updated)
+        }
     }
 
     func update(_ project: Project) -> Bool {
@@ -215,6 +358,11 @@ final class LauncherModel: ObservableObject {
         next.projects.removeAll { $0.id == id }
         guard commit(next) else { return }
         runs[id] = nil
+        gitStatuses[id] = nil
+        gitBusy.remove(id)
+        gitNoticeTasks[id]?.cancel()
+        gitNoticeTasks[id] = nil
+        gitNotices[id] = nil
         if selection == id { selection = projects.first?.id }
     }
 

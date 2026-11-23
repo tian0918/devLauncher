@@ -21,6 +21,7 @@ struct Integration {
         try verifyTerminalAndAICLI(from: root)
         try verifyLaunchPortCommandAdaptation(at: root)
         try await verifyIDECommands(from: root)
+        try verifyGitSupport(from: root)
         try await verifyPythonLaunch(at: root)
 
         let homeProjects = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Desktop/txby项目")
@@ -609,6 +610,81 @@ struct Integration {
 
         let localCLIs = ProjectAICLI.discover()
         print("Terminal & AI CLI checks passed. Local installed AI CLIs: \(localCLIs.map(\.name).joined(separator: ", "))")
+    }
+
+    static func verifyGitSupport(from root: URL) throws {
+        let nonRepo = root.appendingPathComponent("not-a-git-repo", isDirectory: true)
+        try FileManager.default.createDirectory(at: nonRepo, withIntermediateDirectories: true)
+        try expect(ProjectGit.inspect(at: nonRepo.path) == nil, "Non-git directory reported a git status")
+
+        let remote = root.appendingPathComponent("remote.git", isDirectory: true)
+        let repo = root.appendingPathComponent("git-fixture", isDirectory: true)
+        let peer = root.appendingPathComponent("git-peer", isDirectory: true)
+        try FileManager.default.createDirectory(at: remote, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: repo, withIntermediateDirectories: true)
+
+        func git(_ args: [String], in dir: URL) throws {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+            process.arguments = args
+            process.currentDirectoryURL = dir
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+            try process.run()
+            process.waitUntilExit()
+            try expect(process.terminationStatus == 0, "git \(args.joined(separator: " ")) failed in \(dir.lastPathComponent)")
+        }
+
+        try git(["init", "--bare"], in: remote)
+        try git(["init", "-b", "main"], in: repo)
+        try git(["config", "user.name", "DevLauncher Test"], in: repo)
+        try git(["config", "user.email", "test@devlauncher.local"], in: repo)
+        try write("hello\n", to: repo.appendingPathComponent("README.md"))
+        try git(["add", "README.md"], in: repo)
+        try git(["commit", "-m", "Initial commit"], in: repo)
+        try git(["remote", "add", "origin", remote.path], in: repo)
+        try git(["push", "-u", "origin", "main"], in: repo)
+
+        guard let clean = ProjectGit.inspect(at: repo.path) else {
+            throw CheckFailure(message: "Failed to inspect git repository")
+        }
+        try expect(clean.branch == "main" && !clean.isDirty && clean.ahead == 0 && clean.behind == 0,
+                   "Unexpected initial git status: \(clean)")
+        try expect(clean.recentCommits.first?.subject == "Initial commit", "Recent commit log missing")
+
+        try write("untracked\n", to: repo.appendingPathComponent("draft.txt"))
+        guard let dirty = ProjectGit.inspect(at: repo.path) else {
+            throw CheckFailure(message: "Failed to inspect dirty repository")
+        }
+        try expect(dirty.isDirty && dirty.untrackedCount == 1, "Dirty working tree was not detected")
+        try FileManager.default.removeItem(at: repo.appendingPathComponent("draft.txt"))
+
+        try ProjectGit.createBranch("feat/l1-git", at: repo.path)
+        guard let created = ProjectGit.inspect(at: repo.path) else {
+            throw CheckFailure(message: "Failed to inspect created branch")
+        }
+        try expect(created.branch == "feat/l1-git" && created.branches.contains("main") && created.branches.contains("feat/l1-git"),
+                   "Branch creation did not switch to feat/l1-git")
+        try ProjectGit.push(at: repo.path, currentStatus: created)
+
+        try ProjectGit.switchBranch("main", at: repo.path)
+        try expect(ProjectGit.inspect(at: repo.path)?.branch == "main", "Branch switch back to main failed")
+
+        try git(["clone", remote.path, peer.path], in: root)
+        try git(["config", "user.name", "Peer"], in: peer)
+        try git(["config", "user.email", "peer@devlauncher.local"], in: peer)
+        try write("remote update\n", to: peer.appendingPathComponent("remote.txt"))
+        try git(["add", "remote.txt"], in: peer)
+        try git(["commit", "-m", "Remote update"], in: peer)
+        try git(["push", "origin", "main"], in: peer)
+
+        try ProjectGit.fetch(at: repo.path)
+        try expect(ProjectGit.inspect(at: repo.path)?.behind == 1, "Fetch did not detect 1 behind commit")
+        try ProjectGit.pull(at: repo.path)
+        let pulled = ProjectGit.inspect(at: repo.path)
+        try expect(pulled?.behind == 0 && pulled?.recentCommits.first?.subject == "Remote update",
+                   "Pull did not bring in remote commit")
+        print("Git L1 support checks passed")
     }
 
     static func verifyLaunchPortCommandAdaptation(at root: URL) throws {
