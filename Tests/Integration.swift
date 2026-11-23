@@ -19,6 +19,7 @@ struct Integration {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
         try verifyCodexCommand(from: root)
+        try await verifyIDECommands(from: root)
         try await verifyPythonLaunch(at: root)
 
         let homeProjects = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Desktop/txby项目")
@@ -223,6 +224,7 @@ struct Integration {
         try write("""
         import os, sys, time
         print(f"python pid={os.getpid()}", flush=True)
+        print(f"port={os.environ['PORT']}", flush=True)
         assert os.path.isfile("main.py")
         assert os.environ["VIRTUAL_ENV"].endswith("/.venv")
         assert os.environ["PYTHON_VENV_TEST"] == "1"
@@ -255,12 +257,35 @@ struct Integration {
         guard var project = model.projects.first else { throw CheckFailure(message: "Python project was not imported") }
         let saved = try file.load()
         try expect(saved.projects.first?.kind == .python, "Python kind was not persisted")
+        try expect(saved.projects.first?.launchPort == nil, "Imported projects should use their default port")
+        let listener = try openLoopbackListener()
+        let port = listener?.port ?? UInt16.random(in: 49152...65535)
+        project.launchPort = port
+        let savedPort = model.update(project)
+        if let listener {
+            defer { close(listener.descriptor) }
+            try expect(TCPPortStatus.check(port) == .occupied, "The TCP listener was not detected")
+            model.start(project)
+            try await until("occupied launch port") { model.runState(project.id).phase == .failed }
+            let log = model.runState(project.id).log
+            try expect(log.contains("TCP 端口 \(port) 已被占用") && !log.contains("python pid="),
+                       "Port conflict did not stop the launch with a clear message")
+        }
+        try expect(savedPort, "The launch port could not be saved")
+        let reloaded = try file.load()
+        try expect(reloaded.projects.first?.launchPort == port, "The launch port was not persisted")
+        if listener != nil {
+            try expect(TCPPortStatus.check(port) == .available, "The released port did not become available")
+        } else {
+            print("TCP port conflict checks skipped because loopback binding is unavailable")
+        }
         defer { model.stop(project.id) }
         model.start(project)
         try await until("Python startup and unbuffered output", describe: { model.runState(project.id).log }) {
             model.runState(project.id).phase == .running && model.runState(project.id).log.contains("live output without newline")
         }
         let firstRun = model.runState(project.id).log
+        try expect(firstRun.contains("port=\(port)\n"), "The selected port was not passed to Python")
         model.restart(project.id)
         try await until("Python restart") {
             let state = model.runState(project.id)
@@ -273,6 +298,7 @@ struct Integration {
             throw CheckFailure(message: "Single Python script import failed")
         }
         project.command = custom.suggestedCommand
+        project.launchPort = nil
         try expect(model.update(project), "Python custom command was not saved")
         model.start(project)
         try await until("Python script with quotes and spaces") { model.runState(project.id).phase == .finished }
@@ -436,6 +462,37 @@ struct Integration {
                    !failed.log.contains("安装完成") && !failed.log.contains("RECOVERED"), "Failed install restarted the project")
     }
 
+    @MainActor
+    private static func verifyIDECommands(from root: URL) async throws {
+        let bin = root.appendingPathComponent("IDE command fixtures")
+        let project = root.appendingPathComponent("IDE 项目 'with spaces'")
+        try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        for (ide, command) in [(ProjectIDE.vscode, "code"), (.sublimeText, "subl")] {
+            let executable = bin.appendingPathComponent(command)
+            try write(#"""
+            #!/bin/sh
+            printf '%s\n' "$#" "$1" > "${0##*/}.opened"
+            """#, to: executable)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
+
+            try await ide.open(at: project.path, shellPath: bin.path)
+            let result = try String(contentsOf: project.appendingPathComponent("\(command).opened"), encoding: .utf8)
+            try expect(result == "1\n.\n",
+                       "\(command) did not receive the exact project directory and argument")
+        }
+
+        try write("#!/bin/sh\nexit 7\n", to: bin.appendingPathComponent("code"))
+        do {
+            try await ProjectIDE.vscode.open(at: project.path, shellPath: bin.path)
+        } catch {
+            try expect(error.localizedDescription.contains("VS Code") && error.localizedDescription.contains("7"),
+                       "IDE launch failure did not identify the editor and exit status")
+            return
+        }
+        throw CheckFailure(message: "A failing IDE command was reported as successful")
+    }
+
     static func verifyCodexCommand(from root: URL) throws {
         let directory = root.appendingPathComponent("项目 with 'quote' and $(pwd)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -494,5 +551,34 @@ struct Integration {
                 bind(descriptor, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) == 0
             }
         }
+    }
+
+    private static func openLoopbackListener() throws -> (descriptor: Int32, port: UInt16)? {
+        let descriptor = socket(AF_INET, SOCK_STREAM, 0)
+        guard descriptor >= 0 else {
+            if errno == EPERM || errno == EACCES { return nil }
+            throw SpawnFailure.system(errno)
+        }
+        var listening = false
+        defer { if !listening { close(descriptor) } }
+        var reuse: Int32 = 1
+        guard setsockopt(descriptor, SOL_SOCKET, SO_REUSEADDR, &reuse, socklen_t(MemoryLayout<Int32>.size)) == 0
+        else { throw SpawnFailure.system(errno) }
+
+        var address = sockaddr_in()
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        address.sin_addr.s_addr = inet_addr("127.0.0.1")
+        var size = socklen_t(MemoryLayout<sockaddr_in>.size)
+        let result = withUnsafeMutablePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { pointer -> Int32 in
+                guard bind(descriptor, pointer, size) == 0, listen(descriptor, 1) == 0 else { return errno }
+                return getsockname(descriptor, pointer, &size) == 0 ? 0 : errno
+            }
+        }
+        if result == EPERM || result == EACCES { return nil }
+        guard result == 0 else { throw SpawnFailure.system(result) }
+        listening = true
+        return (descriptor, UInt16(bigEndian: address.sin_port))
     }
 }

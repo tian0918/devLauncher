@@ -5,14 +5,14 @@ import Foundation
 enum ProcessSupervisor {
     private static let mode = "--devlauncher-project-supervisor"
 
-    static func arguments(lock: URL, shellArguments: [String]) -> [String] {
-        [mode, lock.path] + shellArguments
+    static func arguments(lock: URL, launchPort: UInt16?, shellArguments: [String]) -> [String] {
+        [mode, lock.path, launchPort.map(String.init) ?? ""] + shellArguments
     }
 
     static func runIfRequested() {
         let arguments = CommandLine.arguments
         guard arguments.dropFirst().first == mode else { return }
-        guard arguments.count >= 4 else { _exit(64) }
+        guard arguments.count >= 5 else { _exit(64) }
 
         // The GUI's output pipe has no reader after a forced quit.
         signal(SIGPIPE, SIG_IGN)
@@ -21,9 +21,23 @@ enum ProcessSupervisor {
         acquireLock(lock)
         if ownerDisconnected(waiting: 0) { _exit(0) }
 
+        var environment = ProcessInfo.processInfo.environment
+        if !arguments[3].isEmpty {
+            guard let port = UInt16(arguments[3]), port != 0 else {
+                forwardOutput(Data("启动端口必须在 1–65535 之间。\n".utf8))
+                _exit(64)
+            }
+            if TCPPortStatus.check(port) == .occupied {
+                forwardOutput(Data("TCP 端口 \(port) 已被占用。请释放该端口，或在「启动配置」中更换端口后重试。\n".utf8))
+                _exit(1)
+            }
+            environment["PORT"] = String(port)
+        }
+
         do {
             let project = try ManagedProcess(
-                shellArguments: Array(arguments.dropFirst(3)),
+                shellArguments: Array(arguments.dropFirst(4)),
+                environment: environment,
                 onOutput: { forwardOutput($0) },
                 onExit: { result in
                     if let signalNumber = result.signal {

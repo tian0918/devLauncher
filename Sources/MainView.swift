@@ -218,6 +218,7 @@ struct MainView: View {
         .accessibilityAddTraits(selected ? .isSelected : [])
         .help(project.path)
         .contextMenu {
+            openInIDEMenu(project)
             Button("编辑列表别名…") { editingAlias = project }
         }
     }
@@ -338,6 +339,7 @@ struct MainView: View {
             .help("在项目目录中启动 Codex CLI")
 
             Menu {
+                openInIDEMenu(project)
                 Button("编辑列表别名…") { editingAlias = project }
                 Button("在 Finder 中显示") {
                     NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: project.path)
@@ -354,6 +356,16 @@ struct MainView: View {
             .menuIndicator(.hidden)
             .fixedSize()
             .accessibilityLabel("项目操作")
+        }
+    }
+
+    private func openInIDEMenu(_ project: Project) -> some View {
+        Menu("在 IDE 中打开") {
+            ForEach(ProjectIDE.allCases, id: \.self) { ide in
+                Button(ide.rawValue) {
+                    Task { await model.openProject(project, in: ide) }
+                }
+            }
         }
     }
 
@@ -411,6 +423,17 @@ struct MainView: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
+            }
+            if let port = project.launchPort {
+                HStack(spacing: 8) {
+                    Text("启动端口").foregroundStyle(.secondary)
+                    Text(port.formatted(.number.grouping(.never))).monospacedDigit()
+                    if !state.phase.isActive {
+                        PortStatusLabel(port: port)
+                            .id(port)
+                    }
+                }
+                .font(.caption)
             }
         }
         .padding(15)

@@ -137,6 +137,7 @@ struct ProjectEditor: View {
     @State private var project: Project
     @State private var mode: Mode
     @State private var version: String
+    @State private var port: String
 
     private enum Mode: String, CaseIterable, Identifiable {
         case automatic = "自动"
@@ -149,6 +150,7 @@ struct ProjectEditor: View {
     init(project: Project, model: LauncherModel) {
         self.model = model
         _project = State(initialValue: project)
+        _port = State(initialValue: project.launchPort.map(String.init) ?? "")
         let version = project.nodeVersion ?? ""
         _version = State(initialValue: version)
         _mode = State(initialValue: project.nodeVersion == nil ? .automatic :
@@ -156,9 +158,15 @@ struct ProjectEditor: View {
     }
 
     private var cleanedVersion: String { version.trimmingCharacters(in: .whitespacesAndNewlines) }
+    private var cleanedPort: String { port.trimmingCharacters(in: .whitespacesAndNewlines) }
+    private var launchPort: UInt16? {
+        guard let value = UInt16(cleanedPort), value != 0 else { return nil }
+        return value
+    }
 
     private var canSave: Bool {
         guard project.hasLaunchCommand && !project.command.utf8.contains(0) else { return false }
+        guard cleanedPort.isEmpty || launchPort != nil else { return false }
         if project.kind == .python { return true }
         let validVersion = mode == .automatic || NVM.validSelector(cleanedVersion)
         let installed = mode != .installed || model.versions.contains(cleanedVersion)
@@ -182,16 +190,30 @@ struct ProjectEditor: View {
                           prompt: Text(project.kind == .python ? "python3 main.py" : "npm run dev"), axis: .vertical)
                     .lineLimit(2...5)
                     .font(.body.monospaced())
+
+                Section {
+                    TextField("启动端口", text: $port, prompt: Text("留空使用项目默认设置"))
+                        .font(.body.monospaced())
+                    if let launchPort {
+                        PortStatusLabel(port: launchPort)
+                            .id(launchPort)
+                    } else if !cleanedPort.isEmpty {
+                        Text("请输入 1–65535 之间的端口号。")
+                            .font(.caption).foregroundStyle(.red)
+                    }
+                } footer: {
+                    Text("端口通过 `PORT` 环境变量传入。若框架需要命令行参数，可在启动命令中引用 `$PORT`。")
+                }
             }
             .formStyle(.grouped)
-            .scrollDisabled(true)
-            .frame(height: project.kind == .python ? 150 : 195)
+            .frame(height: project.kind == .python ? 280 : 325)
 
             HStack {
                 Spacer()
                 Button("取消") { dismiss() }.keyboardShortcut(.cancelAction)
                 Button("保存") {
                     project.command = project.command.trimmingCharacters(in: .whitespacesAndNewlines)
+                    project.launchPort = launchPort
                     if project.kind == .node { project.nodeVersion = mode == .automatic ? nil : cleanedVersion }
                     if model.update(project) { dismiss() }
                 }
@@ -235,6 +257,40 @@ struct ProjectEditor: View {
                 .font(.body.monospaced())
             if !cleanedVersion.isEmpty && !NVM.validSelector(cleanedVersion) {
                 Text("请输入有效的 nvm 版本或别名。").font(.caption).foregroundStyle(.red)
+            }
+        }
+    }
+}
+
+struct PortStatusLabel: View {
+    let port: UInt16
+    @State private var status: TCPPortStatus?
+
+    var body: some View {
+        Group {
+            switch status {
+            case .available:
+                Label("TCP 端口未占用", systemImage: "checkmark.circle")
+                    .foregroundStyle(.secondary)
+            case .occupied:
+                Label("TCP 端口已被占用", systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.orange)
+            case .unknown:
+                Label("无法检测 TCP 端口", systemImage: "questionmark.circle")
+                    .foregroundStyle(.secondary)
+            case nil:
+                Text("正在检测 TCP 端口…").foregroundStyle(.secondary)
+            }
+        }
+        .font(.caption)
+        .task(id: port) {
+            while !Task.isCancelled {
+                status = TCPPortStatus.check(port)
+                do {
+                    try await Task.sleep(for: .seconds(2))
+                } catch {
+                    break
+                }
             }
         }
     }

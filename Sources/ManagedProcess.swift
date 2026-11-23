@@ -51,11 +51,13 @@ final class ManagedProcess: @unchecked Sendable {
         environment: [String: String] = ProcessInfo.processInfo.environment,
         timeout: TimeInterval? = nil,
         projectLock: URL? = nil,
+        launchPort: UInt16? = nil,
         onOutput: @escaping @Sendable (Data) -> Void,
         onExit: @escaping @Sendable (ProcessOutcome) -> Void
     ) throws {
         (pid, outputFD, keepAliveFD) = try Self.spawn(
-            shellArguments: shellArguments, directory: directory, environment: environment, projectLock: projectLock
+            shellArguments: shellArguments, directory: directory, environment: environment,
+            projectLock: projectLock, launchPort: launchPort
         )
         supervised = projectLock != nil
         self.onOutput = onOutput
@@ -179,7 +181,8 @@ final class ManagedProcess: @unchecked Sendable {
     }
 
     private static func spawn(
-        shellArguments: [String], directory: String?, environment: [String: String], projectLock: URL?
+        shellArguments: [String], directory: String?, environment: [String: String],
+        projectLock: URL?, launchPort: UInt16?
     ) throws -> (pid_t, Int32, Int32?) {
         let executable: String
         let command: [String]
@@ -187,7 +190,7 @@ final class ManagedProcess: @unchecked Sendable {
             guard let main = Bundle.main.executableURL else { throw SpawnFailure.system(ENOENT) }
             try FileManager.default.createDirectory(at: projectLock.deletingLastPathComponent(), withIntermediateDirectories: true)
             executable = main.path
-            command = ProcessSupervisor.arguments(lock: projectLock, shellArguments: shellArguments)
+            command = ProcessSupervisor.arguments(lock: projectLock, launchPort: launchPort, shellArguments: shellArguments)
         } else {
             executable = "/bin/zsh"
             command = shellArguments

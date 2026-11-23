@@ -13,6 +13,7 @@ struct Project: Codable, Identifiable, Equatable {
     var nodeRequirement: String?
     var nodeVersion: String?
     var command: String
+    var launchPort: UInt16?
     private var projectKind: ProjectKind?
 
     var listName: String { listAlias ?? name }

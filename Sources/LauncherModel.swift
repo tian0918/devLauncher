@@ -84,6 +84,14 @@ final class LauncherModel: ObservableObject {
 
     func runState(_ id: UUID) -> RunState { runs[id] ?? RunState() }
 
+    func openProject(_ project: Project, in ide: ProjectIDE) async {
+        do {
+            try await ide.open(at: project.path, shellPath: shellPath)
+        } catch {
+            alert = error.localizedDescription
+        }
+    }
+
     func refreshInstalledVersions() {
         versions = installation?.installedVersions ?? []
     }
@@ -145,6 +153,10 @@ final class LauncherModel: ObservableObject {
     func update(_ project: Project) -> Bool {
         guard !runState(project.id).phase.isActive,
               let index = saved.projects.firstIndex(where: { $0.id == project.id }) else { return false }
+        guard project.launchPort != 0 else {
+            alert = "请输入 1–65535 之间的端口号。"
+            return false
+        }
         var next = saved
         var updated = project
         updated.listAlias = next.projects[index].listAlias
@@ -334,6 +346,7 @@ final class LauncherModel: ObservableObject {
                 shellArguments: arguments, directory: project.path, environment: environment,
                 projectLock: stateFile.url.deletingLastPathComponent()
                     .appendingPathComponent("RunLocks/\(project.id.uuidString).lock"),
+                launchPort: install == nil ? project.launchPort : nil,
                 onOutput: { output.append($0) },
                 onExit: { [weak self] outcome in
                     Task { @MainActor in self?.processEnded(project.id, sessionID: id, outcome: outcome) }

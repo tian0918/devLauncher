@@ -17,6 +17,8 @@
 		A000000000000000000000CF /* RunOutput.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000006B /* RunOutput.swift */; };
 		A000000000000000000000D0 /* ProjectTerminal.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000006C /* ProjectTerminal.swift */; };
 		A000000000000000000000D1 /* ProcessSupervisor.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000006D /* ProcessSupervisor.swift */; };
+		A000000000000000000000D2 /* TCPPortStatus.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000006E /* TCPPortStatus.swift */; };
+		A000000000000000000000D3 /* ProjectIDE.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000006F /* ProjectIDE.swift */; };
 		A000000000000000000000F3 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A000000000000000000000F1 /* Assets.xcassets */; };
 /* End PBXBuildFile section */
 
@@ -32,6 +34,8 @@
 		A0000000000000000000006B /* RunOutput.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RunOutput.swift; sourceTree = "<group>"; };
 		A0000000000000000000006C /* ProjectTerminal.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectTerminal.swift; sourceTree = "<group>"; };
 		A0000000000000000000006D /* ProcessSupervisor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProcessSupervisor.swift; sourceTree = "<group>"; };
+		A0000000000000000000006E /* TCPPortStatus.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TCPPortStatus.swift; sourceTree = "<group>"; };
+		A0000000000000000000006F /* ProjectIDE.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectIDE.swift; sourceTree = "<group>"; };
 		A000000000000000000000F1 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		A000000000000000000000F4 /* DevLauncher.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = DevLauncher.entitlements; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -77,6 +81,8 @@
 				A0000000000000000000006B /* RunOutput.swift */,
 				A0000000000000000000006C /* ProjectTerminal.swift */,
 				A0000000000000000000006D /* ProcessSupervisor.swift */,
+				A0000000000000000000006E /* TCPPortStatus.swift */,
+				A0000000000000000000006F /* ProjectIDE.swift */,
 			);
 			path = Sources;
 			sourceTree = "<group>";
@@ -163,6 +169,8 @@
 				A000000000000000000000CF /* RunOutput.swift in Sources */,
 				A000000000000000000000D0 /* ProjectTerminal.swift in Sources */,
 				A000000000000000000000D1 /* ProcessSupervisor.swift in Sources */,
+				A000000000000000000000D2 /* TCPPortStatus.swift in Sources */,
+				A000000000000000000000D3 /* ProjectIDE.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
