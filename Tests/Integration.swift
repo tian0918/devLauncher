@@ -18,7 +18,8 @@ struct Integration {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
-        try verifyCodexCommand(from: root)
+        try verifyTerminalAndAICLI(from: root)
+        try verifyLaunchPortCommandAdaptation(at: root)
         try await verifyIDECommands(from: root)
         try await verifyPythonLaunch(at: root)
 
@@ -303,6 +304,21 @@ struct Integration {
         model.start(project)
         try await until("Python script with quotes and spaces") { model.runState(project.id).phase == .finished }
         try expect(model.runState(project.id).log == "selected script\n", "Selected Python script did not run")
+
+        let manageScript = script.appendingPathComponent("manage.py")
+        try write("""
+        import os, sys
+        print("args=" + " ".join(sys.argv[1:]), flush=True)
+        print("env=" + os.environ.get("PORT", ""), flush=True)
+        """, to: manageScript)
+        project.command = "python3 manage.py runserver"
+        project.launchPort = port
+        try expect(model.update(project), "Django command with launchPort was not saved")
+        model.start(project)
+        try await until("Django runserver end-to-end port injection") { model.runState(project.id).phase == .finished }
+        let djangoLog = model.runState(project.id).log
+        try expect(djangoLog.contains("args=runserver \(port)\n") && djangoLog.contains("env=\(port)\n"),
+                   "Django runserver did not receive adapted port argument and PORT env: \(djangoLog)")
         print("Python integration checks passed")
     }
 
@@ -464,50 +480,242 @@ struct Integration {
 
     @MainActor
     private static func verifyIDECommands(from root: URL) async throws {
-        let bin = root.appendingPathComponent("IDE command fixtures")
-        let project = root.appendingPathComponent("IDE 项目 'with spaces'")
-        try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+        let apps = root.appendingPathComponent("Applications", isDirectory: true)
+        let toolbox = apps.appendingPathComponent("JetBrains Toolbox", isDirectory: true)
+        let project = root.appendingPathComponent("IDE 项目 'with spaces'", isDirectory: true)
+        try FileManager.default.createDirectory(at: toolbox, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
-        for (ide, command) in [(ProjectIDE.vscode, "code"), (.sublimeText, "subl")] {
-            let executable = bin.appendingPathComponent(command)
-            try write(#"""
-            #!/bin/sh
-            printf '%s\n' "$#" "$1" > "${0##*/}.opened"
-            """#, to: executable)
-            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
 
-            try await ide.open(at: project.path, shellPath: bin.path)
-            let result = try String(contentsOf: project.appendingPathComponent("\(command).opened"), encoding: .utf8)
-            try expect(result == "1\n.\n",
-                       "\(command) did not receive the exact project directory and argument")
+        func makeApp(
+            in parent: URL, filename: String, bundleID: String, displayName: String? = nil,
+            vscodeFork: Bool = false
+        ) throws -> URL {
+            let app = parent.appendingPathComponent(filename, isDirectory: true)
+            let contents = app.appendingPathComponent("Contents", isDirectory: true)
+            try FileManager.default.createDirectory(at: contents, withIntermediateDirectories: true)
+            var plist: [String: Any] = ["CFBundleIdentifier": bundleID]
+            if let displayName { plist["CFBundleName"] = displayName }
+            let data = try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
+            try data.write(to: contents.appendingPathComponent("Info.plist"))
+            if vscodeFork {
+                let appResources = contents.appendingPathComponent("Resources/app", isDirectory: true)
+                let bin = appResources.appendingPathComponent("bin", isDirectory: true)
+                try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+                try write("{}", to: appResources.appendingPathComponent("product.json"))
+                let cli = bin.appendingPathComponent("future")
+                try write("#!/bin/sh\nexit 0\n", to: cli)
+                try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: cli.path)
+            }
+            return app
         }
 
-        try write("#!/bin/sh\nexit 7\n", to: bin.appendingPathComponent("code"))
+        let vscode = try makeApp(in: apps, filename: "Visual Studio Code.app", bundleID: "com.microsoft.VSCode", displayName: "Code")
+        _ = try makeApp(in: apps, filename: "Antigravity.app", bundleID: "com.google.antigravity", displayName: "Antigravity")
+        _ = try makeApp(in: toolbox, filename: "PyCharm.app", bundleID: "com.jetbrains.pycharm", displayName: "PyCharm")
+        _ = try makeApp(in: apps, filename: "Xcode-27.2.0.app", bundleID: "com.apple.dt.Xcode", displayName: "Xcode")
+        _ = try makeApp(in: apps, filename: "Xcode-16.4.app", bundleID: "com.apple.dt.Xcode", displayName: "Xcode")
+        _ = try makeApp(in: apps, filename: "FutureCode.app", bundleID: "com.example.futurecode", displayName: "Code", vscodeFork: true)
+        _ = try makeApp(in: apps, filename: "wechatwebdevtools.app", bundleID: "com.github.Electron", displayName: "wechatwebdevtools")
+        // Non-IDE apps must be excluded.
+        _ = try makeApp(in: apps, filename: "Docker.app", bundleID: "com.docker.docker", displayName: "Docker")
+        _ = try makeApp(in: apps, filename: "Google Chrome.app", bundleID: "com.google.Chrome", displayName: "Google Chrome")
+        _ = try makeApp(in: toolbox, filename: "JetBrains Toolbox.app", bundleID: "com.jetbrains.toolbox", displayName: "JetBrains Toolbox")
+        _ = try makeApp(in: apps, filename: "Dev Launcher.app", bundleID: "local.devlauncher.mac", displayName: "Dev Launcher")
+
+        let discovered = ProjectIDE.discover(searchDirectories: [apps], includeWorkspaceLookup: false)
+        let names = discovered.map(\.name)
+        let expected = [
+            "Antigravity", "FutureCode", "PyCharm", "Visual Studio Code", "Xcode-16.4", "Xcode-27.2.0", "微信开发者工具",
+        ].sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+        try expect(names == expected, "Discovered IDEs differed: \(names)")
+
+        guard let discoveredVSCode = discovered.first(where: { $0.name == "Visual Studio Code" }) else {
+            throw CheckFailure(message: "Visual Studio Code was not discovered")
+        }
+        var opened: (URL, URL)?
+        try await discoveredVSCode.open(at: project.path) { directory, application in
+            opened = (directory, application)
+        }
+        try expect(opened?.0.path == project.path && opened?.1.path == ProjectFiles.canonicalPath(vscode),
+                   "IDE launch did not pass exact directory and application bundle URLs")
+
         do {
-            try await ProjectIDE.vscode.open(at: project.path, shellPath: bin.path)
+            try await discoveredVSCode.open(at: root.appendingPathComponent("missing-dir").path) { _, _ in }
+            throw CheckFailure(message: "Opening a missing directory succeeded unexpectedly")
         } catch {
-            try expect(error.localizedDescription.contains("VS Code") && error.localizedDescription.contains("7"),
-                       "IDE launch failure did not identify the editor and exit status")
-            return
+            try expect(error.localizedDescription.contains("项目目录不可用"),
+                       "Missing directory error did not explain the issue")
         }
-        throw CheckFailure(message: "A failing IDE command was reported as successful")
+
+        try FileManager.default.removeItem(at: vscode)
+        do {
+            try await discoveredVSCode.open(at: project.path) { _, _ in }
+            throw CheckFailure(message: "Opening with a removed app succeeded unexpectedly")
+        } catch {
+            try expect(error.localizedDescription.contains("Visual Studio Code"),
+                       "Missing app error did not identify the IDE")
+        }
+
+        let localIDEs = ProjectIDE.discover()
+        print("IDE auto-discovery checks passed. Local installed IDEs: \(localIDEs.map(\.name).joined(separator: ", "))")
     }
 
-    static func verifyCodexCommand(from root: URL) throws {
+    static func verifyTerminalAndAICLI(from root: URL) throws {
         let directory = root.appendingPathComponent("项目 with 'quote' and $(pwd)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let command = try ProjectTerminal.codexCommand(at: ProjectFiles.canonicalPath(directory))
+        let canonicalDirectory = ProjectFiles.canonicalPath(directory)
 
-        let shell = Process()
-        shell.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        shell.arguments = ["-fc", "codex() { printf '%s' \"$PWD\"; }; " + command]
-        let output = Pipe()
-        shell.standardOutput = output
-        try shell.run()
-        let result = output.fileHandleForReading.readDataToEndOfFile()
-        shell.waitUntilExit()
-        try expect(shell.terminationStatus == 0 && String(decoding: result, as: UTF8.self) == ProjectFiles.canonicalPath(directory),
-                   "Codex command did not enter the exact project directory")
+        let directCommand = try ProjectTerminal.directoryCommand(at: canonicalDirectory)
+        let directShell = Process()
+        directShell.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        directShell.arguments = ["-fc", directCommand + " && printf '%s' \"$PWD\""]
+        let directOutput = Pipe()
+        directShell.standardOutput = directOutput
+        try directShell.run()
+        let directResult = directOutput.fileHandleForReading.readDataToEndOfFile()
+        directShell.waitUntilExit()
+        try expect(directShell.terminationStatus == 0 && String(decoding: directResult, as: UTF8.self) == canonicalDirectory,
+                   "Direct terminal command did not enter the exact project directory")
+
+        let binDir = root.appendingPathComponent("ai-cli-bin", isDirectory: true)
+        try FileManager.default.createDirectory(at: binDir, withIntermediateDirectories: true)
+        for name in ["codex", "claude", "agy", "unknown-tool"] {
+            let binary = binDir.appendingPathComponent(name)
+            try write("#!/bin/sh\nexit 0\n", to: binary)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: binary.path)
+        }
+        // Non-executable file and directory with known names must be ignored.
+        try write("#!/bin/sh\n", to: binDir.appendingPathComponent("gemini"))
+        try FileManager.default.createDirectory(at: binDir.appendingPathComponent("kimi"), withIntermediateDirectories: true)
+
+        let discovered = ProjectAICLI.discover(searchDirectories: [binDir])
+        try expect(discovered.map(\.command) == ["agy", "claude", "codex"],
+                   "AI CLI discovery differed: \(discovered.map(\.command))")
+
+        guard let codex = discovered.first(where: { $0.command == "codex" }) else {
+            throw CheckFailure(message: "Codex CLI was not discovered")
+        }
+        let cliCommand = try ProjectTerminal.launchCommand(for: codex, at: canonicalDirectory)
+        let cliShell = Process()
+        cliShell.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        cliShell.arguments = ["-fc", "codex() { printf '%s' \"$PWD\"; }; " + cliCommand]
+        let cliOutput = Pipe()
+        cliShell.standardOutput = cliOutput
+        try cliShell.run()
+        let cliResult = cliOutput.fileHandleForReading.readDataToEndOfFile()
+        cliShell.waitUntilExit()
+        try expect(cliShell.terminationStatus == 0 && String(decoding: cliResult, as: UTF8.self) == canonicalDirectory,
+                   "AI CLI command did not enter the exact project directory")
+
+        let localCLIs = ProjectAICLI.discover()
+        print("Terminal & AI CLI checks passed. Local installed AI CLIs: \(localCLIs.map(\.name).joined(separator: ", "))")
+    }
+
+    static func verifyLaunchPortCommandAdaptation(at root: URL) throws {
+        let viteDir = root.appendingPathComponent("vite-port-fixture")
+        try FileManager.default.createDirectory(at: viteDir, withIntermediateDirectories: true)
+        try write(#"""
+        {
+          "name": "vite-port-fixture",
+          "scripts": {
+            "dev": "vite --host 127.0.0.1",
+            "preview": "vite preview",
+            "build": "vite build",
+            "fixed": "vite --port 3000",
+            "envport": "vite --port $PORT",
+            "start": "astro dev"
+          }
+        }
+        """#, to: viteDir.appendingPathComponent("package.json"))
+
+        func nodeProject(command: String, port: UInt16?) -> Project {
+            var project = Project(candidate: ProjectCandidate(
+                path: viteDir.path, name: "vite-port-fixture", kind: .node,
+                nodeRequirement: nil, suggestedCommand: command
+            ))
+            project.launchPort = port
+            return project
+        }
+
+        func pythonProject(command: String, port: UInt16?) -> Project {
+            var project = Project(candidate: ProjectCandidate(
+                path: viteDir.path, name: "py-port-fixture", kind: .python,
+                nodeRequirement: nil, suggestedCommand: command
+            ))
+            project.launchPort = port
+            return project
+        }
+
+        try expect(ProjectFiles.launchCommand(for: nodeProject(command: "npm run dev", port: nil)) == "npm run dev",
+                   "Command without launchPort should remain unchanged")
+        try expect(ProjectFiles.launchCommand(for: nodeProject(command: "npm run dev", port: 5175))
+                   == "npm run dev -- --port 5175 --strictPort",
+                   "npm run dev for Vite did not append --port and --strictPort")
+        try expect(ProjectFiles.launchCommand(for: nodeProject(command: "npm run dev -- --open", port: 5175))
+                   == "npm run dev -- --open --port 5175 --strictPort",
+                   "npm run dev with existing separator duplicated --")
+        try expect(ProjectFiles.launchCommand(for: nodeProject(command: "npm run preview", port: 4173))
+                   == "npm run preview -- --port 4173 --strictPort",
+                   "npm run preview for Vite did not append --port and --strictPort")
+        try expect(ProjectFiles.launchCommand(for: nodeProject(command: "npm run build", port: 5175)) == "npm run build",
+                   "vite build should not receive a port flag")
+        try expect(ProjectFiles.launchCommand(for: nodeProject(command: "npm run fixed", port: 5175)) == "npm run fixed",
+                   "Script with explicit --port should not receive a duplicate --port")
+        try expect(ProjectFiles.launchCommand(for: nodeProject(command: "npm run envport", port: 5175)) == "npm run envport",
+                   "Script referencing $PORT should not receive a duplicate --port")
+        try expect(ProjectFiles.launchCommand(for: nodeProject(command: "npm start", port: 4321))
+                   == "npm start -- --port 4321",
+                   "npm start for Astro did not append --port")
+        try expect(ProjectFiles.launchCommand(for: nodeProject(command: "pnpm dev", port: 8848))
+                   == "pnpm dev --port 8848 --strictPort",
+                   "pnpm dev for Vite did not append --port without --")
+        try expect(ProjectFiles.launchCommand(for: nodeProject(command: "yarn dev", port: 8848))
+                   == "yarn dev --port 8848 --strictPort",
+                   "yarn dev for Vite did not append --port without --")
+        try expect(ProjectFiles.launchCommand(for: nodeProject(command: "npx vite --host", port: 8848))
+                   == "npx vite --host --port 8848 --strictPort",
+                   "npx vite did not append --port and --strictPort")
+        try expect(ProjectFiles.launchCommand(for: nodeProject(command: "npm run dev -- --port 9000", port: 8848))
+                   == "npm run dev -- --port 9000",
+                   "Command with explicit --port should remain unchanged")
+        try expect(ProjectFiles.launchCommand(for: nodeProject(command: "npm run dev -- --port $PORT", port: 8848))
+                   == "npm run dev -- --port $PORT",
+                   "Command referencing $PORT should remain unchanged")
+        try expect(ProjectFiles.launchCommand(for: nodeProject(command: "echo hi && vite", port: 8848))
+                   == "echo hi && vite",
+                   "Compound shell command should remain unchanged")
+        try expect(ProjectFiles.launchCommand(for: nodeProject(command: "vite # comment", port: 8848))
+                   == "vite # comment",
+                   "Command with shell comment should remain unchanged")
+
+        try expect(ProjectFiles.launchCommand(for: pythonProject(command: "python3 manage.py runserver", port: 8008))
+                   == "python3 manage.py runserver 8008",
+                   "Django runserver did not append port")
+        try expect(ProjectFiles.launchCommand(for: pythonProject(command: "python3 manage.py runserver --noreload", port: 8008))
+                   == "python3 manage.py runserver --noreload 8008",
+                   "Django runserver with flags did not append port")
+        try expect(ProjectFiles.launchCommand(for: pythonProject(command: "python3 manage.py runserver 0.0.0.0:9000", port: 8008))
+                   == "python3 manage.py runserver 0.0.0.0:9000",
+                   "Django runserver with explicit addrport should remain unchanged")
+        try expect(ProjectFiles.launchCommand(for: pythonProject(command: "python3 -m uvicorn main:app --reload", port: 8008))
+                   == "python3 -m uvicorn main:app --reload --port 8008",
+                   "uvicorn did not append --port")
+        try expect(ProjectFiles.launchCommand(for: pythonProject(command: "uv run fastapi dev main.py", port: 8008))
+                   == "uv run fastapi dev main.py --port 8008",
+                   "uv run fastapi dev did not append --port")
+        try expect(ProjectFiles.launchCommand(for: pythonProject(command: "flask run", port: 8008))
+                   == "flask run --port 8008",
+                   "flask run did not append --port")
+        try expect(ProjectFiles.launchCommand(for: pythonProject(command: "streamlit run app.py", port: 8502))
+                   == "streamlit run app.py --server.port 8502",
+                   "streamlit run did not append --server.port")
+        try expect(ProjectFiles.launchCommand(for: pythonProject(command: "python3 -m http.server --directory public", port: 8008))
+                   == "python3 -m http.server --directory public 8008",
+                   "http.server did not append port")
+        try expect(ProjectFiles.launchCommand(for: pythonProject(command: "python3 main.py", port: 8008))
+                   == "python3 main.py",
+                   "Arbitrary python script should remain unchanged")
+        print("Launch port command adaptation checks passed")
     }
 
     @MainActor

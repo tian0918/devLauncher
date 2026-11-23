@@ -39,6 +39,9 @@ final class LauncherModel: ObservableObject {
     @Published private(set) var detecting = false
     @Published private(set) var scanning = false
     @Published private(set) var scanResult: ScanResult?
+    @Published private(set) var installedIDEs: [ProjectIDE] = []
+    @Published private(set) var installedTerminals: [ProjectTerminal] = ProjectTerminal.installed()
+    @Published private(set) var installedAICLIs: [ProjectAICLI] = []
     @Published var alert: String?
 
     private struct ActiveRun {
@@ -73,6 +76,8 @@ final class LauncherModel: ObservableObject {
             alert = "无法读取已保存的项目。请检查 \(stateFile.url.path)。\n\(error.localizedDescription)"
         }
         refreshNVM()
+        refreshInstalledIDEs()
+        refreshTerminalTools()
     }
 
     var projects: [Project] {
@@ -84,10 +89,37 @@ final class LauncherModel: ObservableObject {
 
     func runState(_ id: UUID) -> RunState { runs[id] ?? RunState() }
 
+    func refreshInstalledIDEs() {
+        Task.detached(priority: .utility) {
+            let discovered = ProjectIDE.discover()
+            await MainActor.run { [weak self] in
+                guard let self, self.installedIDEs != discovered else { return }
+                self.installedIDEs = discovered
+            }
+        }
+    }
+
+    func refreshTerminalTools() {
+        let terminals = ProjectTerminal.installed()
+        if installedTerminals != terminals {
+            installedTerminals = terminals
+        }
+        let currentShellPath = shellPath
+        let nvmDirectory = installation?.directory
+        Task.detached(priority: .utility) {
+            let discovered = ProjectAICLI.discover(shellPath: currentShellPath, nvmDirectory: nvmDirectory)
+            await MainActor.run { [weak self] in
+                guard let self, self.installedAICLIs != discovered else { return }
+                self.installedAICLIs = discovered
+            }
+        }
+    }
+
     func openProject(_ project: Project, in ide: ProjectIDE) async {
         do {
-            try await ide.open(at: project.path, shellPath: shellPath)
+            try await ide.open(at: project.path)
         } catch {
+            refreshInstalledIDEs()
             alert = error.localizedDescription
         }
     }
@@ -296,6 +328,11 @@ final class LauncherModel: ObservableObject {
         }
     }
 
+    func clearLog(_ id: UUID) {
+        processes[id]?.output.clear()
+        runs[id]?.log = ""
+    }
+
     func terminate(reply: @escaping () -> Void) -> Bool {
         terminating = true
         cancelScan()
@@ -311,6 +348,7 @@ final class LauncherModel: ObservableObject {
         detecting = false
         installation = result
         refreshInstalledVersions()
+        refreshTerminalTools()
         let queued = waitingForNVM
         waitingForNVM.removeAll()
         for project in queued.values { launch(project, using: result) }
@@ -325,6 +363,7 @@ final class LauncherModel: ObservableObject {
         let isPython = project.kind == .python
         let output = RunOutput(token: id.uuidString, precedingLog: precedingLog, expectsNodeStartup: !isPython)
         var environment = ManagedProcess.environment(shellPath: installation == nil ? shellPath : nil)
+        let launchCommand = install == nil ? ProjectFiles.launchCommand(for: project) : project.command
         let arguments: [String]
         if isPython {
             if let virtualEnvironment = ProjectFiles.pythonVirtualEnvironment(at: project.path),
@@ -333,11 +372,11 @@ final class LauncherModel: ObservableObject {
                 environment["VIRTUAL_ENV"] = virtualEnvironment.path
             }
             environment["PYTHONUNBUFFERED"] = environment["PYTHONUNBUFFERED"] ?? "1"
-            arguments = ["-fc", project.command]
+            arguments = ["-fc", launchCommand]
         } else {
             arguments = NVM.arguments(
                 installation: installation, selector: project.nodeVersion,
-                command: project.command, token: id.uuidString, operation: install?.operation ?? .start
+                command: launchCommand, token: id.uuidString, operation: install?.operation ?? .start
             )
         }
         runs[project.id] = RunState(phase: install == nil ? .starting : .installing, log: precedingLog)

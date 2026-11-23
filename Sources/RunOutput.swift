@@ -101,6 +101,14 @@ final class RunOutput: @unchecked Sendable {
         return Self.decoded(data)
     }
 
+    func clear() {
+        lock.lock()
+        defer { lock.unlock() }
+        bytes.removeAll(keepingCapacity: false)
+        precedingBytes = 0
+        changed = true
+    }
+
     private static func decoded(_ data: Data) -> String {
         let raw = String(decoding: data, as: UTF8.self)
         return terminalControls.stringByReplacingMatches(

@@ -6,7 +6,7 @@ Dev Launcher 是一个 macOS 15+ 的本地 Node.js 和 Python 项目启动器。
 2. 选中项目，在「启动配置」中编辑 Node 版本和命令。自动模式优先使用最近的 `.nvmrc`，其次使用 nvm 的 `default`。有 `dev` 脚本的项目默认使用 `npm run dev`，有 `start` 脚本时也可以用 `npm run start`。
 3. 点击「启动」或按 ⌘↩。每个项目有独立日志，可在 App 内停止或重启。
 4. 找不到 nvm 时，项目使用 `PATH` 中的默认 Node。需要切换版本时，可在「设置」中选择 nvm 目录或 `nvm.sh`。启动提示缺少 Node 版本或 npm 依赖时，可以点击「安装并重启」。安装成功后，App 会重新执行项目保存的启动命令。
-5. 点击项目详情里的「Codex」，选择 Terminal 或 iTerm2，在新窗口的项目目录中启动 Codex CLI。首次使用时，macOS 可能会询问是否允许 Dev Launcher 控制所选终端。
+5. 点击项目详情里的「终端」，可直接在新窗口的项目目录中打开 Terminal / iTerm2，也可以自动检测并启动本机已安装的 AI CLI（如 Claude Code、Codex、Gemini CLI、Antigravity、Kimi 等）。首次使用时，macOS 可能会询问是否允许 Dev Launcher 控制所选终端。
 
 项目列表与启动设置存储于 `~/Library/Application Support/DevLauncher/projects.json`。运行日志保留在本次 App 会话中。
 

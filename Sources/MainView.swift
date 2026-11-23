@@ -1,20 +1,34 @@
 import SwiftUI
 
 struct MainView: View {
+    private enum SidebarFocus: Hashable {
+        case list
+        case search
+    }
+
     @ObservedObject var model: LauncherModel
+    @Environment(\.colorScheme) private var colorScheme
     @State private var search = ""
+    @State private var runningOnly = false
     @State private var editing: Project?
     @State private var editingAlias: Project?
     @State private var showingImport = false
     @State private var confirmingRemoval = false
     @State private var available = true
-    @State private var openingCodex = false
-    @FocusState private var projectListFocused: Bool
+    @State private var openingTerminal = false
+    @State private var copiedPath = false
+    @State private var pathCopyTask: Task<Void, Never>?
+    @FocusState private var sidebarFocus: SidebarFocus?
 
     private var filtered: [Project] {
-        guard !search.isEmpty else { return model.projects }
-        return model.projects.filter {
-            $0.name.localizedStandardContains(search) || $0.path.localizedStandardContains(search)
+        model.projects.filter { project in
+            if runningOnly && model.runState(project.id).phase != .running {
+                return false
+            }
+            guard !search.isEmpty else { return true }
+            return project.listName.localizedStandardContains(search)
+                || project.name.localizedStandardContains(search)
+                || project.path.localizedStandardContains(search)
         }
     }
 
@@ -29,7 +43,7 @@ struct MainView: View {
     var body: some View {
         NavigationSplitView {
             sidebar
-                .navigationSplitViewColumnWidth(min: 220, ideal: 265, max: 340)
+                .navigationSplitViewColumnWidth(min: 232, ideal: 274, max: 350)
         } detail: {
             Group {
                 if let project = selected {
@@ -58,9 +72,18 @@ struct MainView: View {
         .onChange(of: model.scanResult != nil) { _, ready in
             if ready { showingImport = true }
         }
-        .onChange(of: selected?.path, initial: true) { _, _ in refreshFolderAvailability() }
+        .onChange(of: runningCount) { _, count in
+            if count == 0 { runningOnly = false }
+        }
+        .onChange(of: selected?.path, initial: true) { _, _ in
+            copiedPath = false
+            pathCopyTask?.cancel()
+            refreshFolderAvailability()
+        }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             refreshFolderAvailability()
+            model.refreshInstalledIDEs()
+            model.refreshTerminalTools()
         }
         .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didMountNotification)) { _ in
             refreshFolderAvailability()
@@ -80,80 +103,157 @@ struct MainView: View {
 
     private var sidebar: some View {
         VStack(spacing: 0) {
-            HStack {
-                Text("项目").font(.headline)
-                Spacer()
-                Button { selectProjects(model) } label: {
-                    Image(systemName: "plus").font(.system(size: 14, weight: .semibold))
+            HStack(spacing: 8) {
+                Text("项目")
+                    .font(.system(size: 14, weight: .semibold))
+                if !model.projects.isEmpty {
+                    Text("\(model.projects.count)")
+                        .font(.caption2.weight(.semibold).monospacedDigit())
+                        .foregroundStyle(LauncherPalette.actionInk)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(LauncherPalette.selection, in: Capsule())
                 }
-                .buttonStyle(.borderless)
-                .accessibilityLabel("添加项目")
-                .help("添加项目（⌘O）")
+                Spacer()
+                SidebarIconButton(systemImage: "plus", accessibilityLabel: "添加项目", helpText: "添加项目（⌘O）") {
+                    selectProjects(model)
+                }
             }
-            .padding(.horizontal, 16)
-            .padding(.top, 8)
+            .padding(.horizontal, 14)
+            .padding(.top, 10)
             .padding(.bottom, 10)
 
             HStack(spacing: 7) {
-                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                TextField("搜索项目", text: $search)
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(sidebarFocus == .search ? LauncherPalette.actionInk : .secondary)
+                TextField("搜索项目或路径", text: $search)
                     .textFieldStyle(.plain)
+                    .font(.callout)
+                    .focused($sidebarFocus, equals: .search)
                     .accessibilityLabel("搜索项目")
                 if !search.isEmpty {
-                    Button { search = "" } label: {
-                        Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                    Button {
+                        search = ""
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel("清除搜索")
                 }
             }
-            .padding(.horizontal, 9)
+            .padding(.horizontal, 10)
             .padding(.vertical, 7)
-            .background(LauncherPalette.surface, in: RoundedRectangle(cornerRadius: 7))
-            .overlay { RoundedRectangle(cornerRadius: 7).strokeBorder(LauncherPalette.line) }
-            .padding(.horizontal, 14)
+            .background(LauncherPalette.surface, in: RoundedRectangle(cornerRadius: 8))
+            .overlay {
+                RoundedRectangle(cornerRadius: 8)
+                    .strokeBorder(
+                        sidebarFocus == .search ? LauncherPalette.focusRing : LauncherPalette.line,
+                        lineWidth: sidebarFocus == .search ? 1.25 : 1
+                    )
+            }
+            .animation(.easeOut(duration: 0.14), value: sidebarFocus == .search)
+            .padding(.horizontal, 12)
             .padding(.bottom, 10)
 
             projectList
 
             Rectangle().fill(LauncherPalette.line).frame(height: 1)
-            HStack(spacing: 8) {
-                if model.scanning {
-                    ProgressView().controlSize(.small)
-                    Text("正在扫描…")
-                    Spacer()
-                    Button("取消", action: model.cancelScan).buttonStyle(.borderless)
-                } else {
-                    if runningCount > 0 {
-                        Circle().fill(LauncherPalette.running).frame(width: 6, height: 6)
-                        Text("\(runningCount) 个项目运行中")
-                    } else {
-                        Text("\(model.projects.count) 个项目")
-                    }
-                    Spacer()
-                }
-            }
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 11)
+            sidebarFooter
         }
         .background(LauncherPalette.sidebar)
+    }
+
+    private var sidebarFooter: some View {
+        HStack(spacing: 8) {
+            if model.scanning {
+                ProgressView().controlSize(.small)
+                Text("正在扫描…")
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("取消", action: model.cancelScan)
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(LauncherPalette.actionInk)
+            } else {
+                if runningCount > 0 {
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.15)) {
+                            runningOnly.toggle()
+                        }
+                    } label: {
+                        HStack(spacing: 5) {
+                            Circle()
+                                .fill(LauncherPalette.running)
+                                .frame(width: 6, height: 6)
+                            Text("\(runningCount) 个运行中")
+                                .font(.caption.weight(.medium))
+                        }
+                        .foregroundStyle(runningOnly ? LauncherPalette.running : .secondary)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3.5)
+                        .background(
+                            runningOnly ? LauncherPalette.runningFill : LauncherPalette.surface,
+                            in: Capsule()
+                        )
+                        .overlay {
+                            Capsule()
+                                .strokeBorder(runningOnly ? LauncherPalette.runningEdge : LauncherPalette.line)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .help(runningOnly ? "显示全部项目" : "仅显示运行中的项目")
+                } else {
+                    Text("\(model.projects.count) 个项目")
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                if runningOnly {
+                    Button("全部") {
+                        withAnimation(.easeInOut(duration: 0.15)) { runningOnly = false }
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(LauncherPalette.actionInk)
+                }
+            }
+        }
+        .font(.caption)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
     }
 
     private var projectList: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(spacing: 3) {
+                LazyVStack(spacing: 4) {
                     ForEach(filtered) { project in
-                        projectRow(project).id(project.id)
+                        ProjectRowView(
+                            project: project,
+                            phase: model.runState(project.id).phase,
+                            selected: project.id == model.selection,
+                            listFocused: sidebarFocus == .list,
+                            onSelect: {
+                                model.selection = project.id
+                                sidebarFocus = .list
+                            }
+                        )
+                        .id(project.id)
+                        .contextMenu {
+                            openInIDEMenu(project)
+                            Menu("在终端中打开") {
+                                terminalMenuContent(project)
+                            }
+                            Button("编辑列表别名…") { editingAlias = project }
+                        }
                     }
                 }
                 .padding(.horizontal, 10)
-                .padding(.vertical, 3)
+                .padding(.vertical, 4)
             }
             .focusable()
-            .focused($projectListFocused)
+            .focused($sidebarFocus, equals: .list)
+            .defaultFocus($sidebarFocus, .list)
             .focusEffectDisabled()
             .accessibilityLabel("项目列表")
             .onChange(of: model.selection) { _, id in
@@ -167,59 +267,25 @@ struct MainView: View {
                 }
             }
             .overlay {
-                if filtered.isEmpty && !search.isEmpty {
-                    Text("没有匹配的项目").font(.callout).foregroundStyle(.secondary)
+                if filtered.isEmpty && (!search.isEmpty || runningOnly) {
+                    VStack(spacing: 8) {
+                        Image(systemName: "magnifyingglass")
+                            .font(.system(size: 18, weight: .medium))
+                            .foregroundStyle(.tertiary)
+                        Text(runningOnly && search.isEmpty ? "没有运行中的项目" : "没有匹配的项目")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                        Button("重置筛选") {
+                            search = ""
+                            runningOnly = false
+                        }
+                        .buttonStyle(.plain)
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(LauncherPalette.actionInk)
+                    }
+                    .padding(16)
                 }
             }
-        }
-    }
-
-    private func projectRow(_ project: Project) -> some View {
-        let phase = model.runState(project.id).phase
-        let selected = project.id == model.selection
-        return Button {
-            model.selection = project.id
-            projectListFocused = true
-        } label: {
-            HStack(spacing: 9) {
-                Image(systemName: "folder")
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundStyle(LauncherPalette.actionInk)
-                    .accessibilityHidden(true)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(project.listName)
-                        .font(.callout.weight(selected ? .semibold : .medium))
-                        .lineLimit(1)
-                    Text(URL(fileURLWithPath: project.path).deletingLastPathComponent().lastPathComponent)
-                        .font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-                if phase.isActive {
-                    StatusLabel(phase: phase).fixedSize()
-                }
-            }
-            .padding(.horizontal, 9)
-            .padding(.vertical, 7)
-            .background {
-                if selected {
-                    RoundedRectangle(cornerRadius: 8).fill(LauncherPalette.selection)
-                }
-            }
-            .overlay {
-                if selected {
-                    RoundedRectangle(cornerRadius: 8)
-                        .strokeBorder(projectListFocused ? LauncherPalette.selectionEdge : LauncherPalette.line)
-                }
-            }
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityAddTraits(selected ? .isSelected : [])
-        .help(project.path)
-        .contextMenu {
-            openInIDEMenu(project)
-            Button("编辑列表别名…") { editingAlias = project }
         }
     }
 
@@ -235,62 +301,155 @@ struct MainView: View {
     }
 
     private var placeholder: some View {
-        VStack(spacing: 13) {
-            Image(systemName: "terminal")
-                .font(.system(size: 30, weight: .medium))
-                .foregroundStyle(LauncherPalette.actionInk)
-                .frame(width: 66, height: 66)
-                .background(LauncherPalette.selection, in: RoundedRectangle(cornerRadius: 17))
-                .accessibilityHidden(true)
-            Text(model.projects.isEmpty ? "添加你的第一个项目" : "选择一个项目")
-                .font(.title2.weight(.semibold))
+        VStack(spacing: 14) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 18)
+                    .fill(LauncherPalette.selection)
+                    .frame(width: 68, height: 68)
+                RoundedRectangle(cornerRadius: 18)
+                    .strokeBorder(LauncherPalette.selectionEdge.opacity(0.7))
+                    .frame(width: 68, height: 68)
+                Image(systemName: "terminal")
+                    .font(.system(size: 28, weight: .medium))
+                    .foregroundStyle(LauncherPalette.actionInk)
+            }
+            .shadow(color: LauncherPalette.cardShadow(colorScheme), radius: 8, y: 3)
+            .accessibilityHidden(true)
+
+            VStack(spacing: 6) {
+                Text(model.projects.isEmpty ? "添加你的第一个项目" : "选择一个项目")
+                    .font(.title2.weight(.semibold))
+                if model.projects.isEmpty {
+                    Text("选择 Node.js 或 Python 项目文件，或扫描包含多个项目的文件夹。")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+            }
+
             if model.projects.isEmpty {
-                Text("选择 Node.js 或 Python 项目文件，或扫描包含多个项目的文件夹。")
-                    .font(.callout).foregroundStyle(.secondary)
                 Button { selectProjects(model) } label: {
                     Label("添加项目", systemImage: "plus")
                 }
                 .buttonStyle(ProjectActionStyle(tone: .primary))
+                .focusEffectDisabled()
                 .padding(.top, 4)
             }
         }
+        .padding(32)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private func detail(_ project: Project) -> some View {
         let state = model.runState(project.id)
-        return VStack(alignment: .leading, spacing: 20) {
-            HStack(alignment: .top, spacing: 16) {
-                VStack(alignment: .leading, spacing: 7) {
-                    StatusLabel(phase: state.phase)
-                    Text(project.name).font(.system(size: 30, weight: .semibold)).lineLimit(1)
-                        .help(project.name)
-                    Text(project.path)
-                        .font(.callout.monospaced())
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1).truncationMode(.middle).textSelection(.enabled)
-                        .help(project.path)
-                }
-                Spacer(minLength: 0)
-                actions(project, state: state, available: available)
-            }
+        return VStack(alignment: .leading, spacing: 18) {
+            header(project, state: state)
 
             configuration(project, state: state)
 
             if !available {
-                Label("项目文件夹不可用。连接磁盘后再试，或重新定位项目。", systemImage: "externaldrive.badge.exclamationmark")
-                    .font(.callout)
-                    .foregroundStyle(.orange)
+                HStack(spacing: 10) {
+                    Image(systemName: "externaldrive.badge.exclamationmark")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundStyle(LauncherPalette.warning)
+                    Text("项目文件夹不可用。连接磁盘后再试，或重新定位项目。")
+                        .font(.callout)
+                        .foregroundStyle(LauncherPalette.warning)
+                    Spacer(minLength: 8)
+                    Button("重新定位…") { relocate(project) }
+                        .buttonStyle(ProjectActionStyle(size: .compact))
+                        .focusEffectDisabled()
+                        .disabled(state.phase.isActive)
+                }
+                .padding(.horizontal, 13)
+                .padding(.vertical, 10)
+                .background(LauncherPalette.warningFill, in: RoundedRectangle(cornerRadius: 10))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 10)
+                        .strokeBorder(LauncherPalette.warningEdge)
+                }
             }
 
-            ConsoleView(state: state) { model.installAndRestart(project.id) }
-                .frame(maxHeight: .infinity)
+            ConsoleView(
+                state: state,
+                clearLog: { model.clearLog(project.id) },
+                installAndRestart: { model.installAndRestart(project.id) }
+            )
+            .frame(maxHeight: .infinity)
         }
-        .padding(25)
+        .padding(.horizontal, 24)
+        .padding(.vertical, 22)
         .confirmationDialog("移除「\(project.name)」？", isPresented: $confirmingRemoval, titleVisibility: .visible) {
             Button("移除项目", role: .destructive) { model.remove(project.id) }
         } message: {
             Text("这会从项目列表移除该项目。磁盘上的文件会保留。")
+        }
+    }
+
+    private func header(_ project: Project, state: RunState) -> some View {
+        HStack(alignment: .top, spacing: 16) {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 8) {
+                    StatusLabel(phase: state.phase, style: .pill)
+                    ProjectKindBadge(kind: project.kind)
+                    if let alias = project.listAlias {
+                        Text("别名：\(alias)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 2.5)
+                            .background(LauncherPalette.surface, in: Capsule())
+                            .overlay { Capsule().strokeBorder(LauncherPalette.line) }
+                    }
+                }
+
+                Text(project.name)
+                    .font(.system(size: 26, weight: .semibold))
+                    .lineLimit(1)
+                    .help(project.name)
+
+                HStack(spacing: 6) {
+                    Image(systemName: "folder")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.tertiary)
+                    Text(project.path)
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .textSelection(.enabled)
+                        .help(project.path)
+
+                    Button {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(project.path, forType: .string)
+                        pathCopyTask?.cancel()
+                        withAnimation(.easeInOut(duration: 0.14)) { copiedPath = true }
+                        pathCopyTask = Task {
+                            try? await Task.sleep(for: .seconds(1.5))
+                            guard !Task.isCancelled else { return }
+                            await MainActor.run {
+                                withAnimation(.easeInOut(duration: 0.14)) { copiedPath = false }
+                            }
+                        }
+                    } label: {
+                        Image(systemName: copiedPath ? "checkmark" : "doc.on.doc")
+                            .font(.system(size: 10.5, weight: .medium))
+                            .foregroundStyle(copiedPath ? LauncherPalette.running : .secondary)
+                            .frame(width: 20, height: 20)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help(copiedPath ? "已复制路径" : "复制项目路径")
+                    .accessibilityLabel("复制项目路径")
+                }
+            }
+
+            Spacer(minLength: 8)
+
+            actions(project, state: state, available: available)
+                .padding(.top, 4)
         }
     }
 
@@ -302,6 +461,7 @@ struct MainView: View {
                 }
                 .buttonStyle(ProjectActionStyle(tone: .stop))
                 .disabled(state.phase == .stopping)
+
                 Button { model.restart(project.id) } label: {
                     Image(systemName: "arrow.clockwise")
                 }
@@ -322,24 +482,42 @@ struct MainView: View {
             }
 
             Menu {
-                ForEach(ProjectTerminal.allCases, id: \.self) { terminal in
-                    Button("在 \(terminal.rawValue) 中打开") { openCodex(project, in: terminal) }
-                }
+                terminalMenuContent(project)
             } label: {
-                HStack(spacing: 6) {
-                    Label("Codex", systemImage: "terminal")
-                    Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold))
+                HoverableControlSurface {
+                    HStack(spacing: 6) {
+                        Label("终端", systemImage: "terminal")
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                    }
                 }
-                .modifier(ProjectControlSurface())
             }
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
-            .disabled(openingCodex)
+            .disabled(openingTerminal)
             .fixedSize()
-            .help("在项目目录中启动 Codex CLI")
+            .help("在项目目录中打开终端或启动已安装的 AI CLI")
 
             Menu {
-                openInIDEMenu(project)
+                openInIDEMenuContent(project)
+            } label: {
+                HoverableControlSurface {
+                    HStack(spacing: 6) {
+                        Label("IDE", systemImage: "chevron.left.forwardslash.chevron.right")
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("在已安装的 IDE 中打开项目")
+            .accessibilityLabel("在 IDE 中打开")
+
+            Menu {
                 Button("编辑列表别名…") { editingAlias = project }
                 Button("在 Finder 中显示") {
                     NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: project.path)
@@ -350,32 +528,91 @@ struct MainView: View {
                 Button("移除项目…", role: .destructive) { confirmingRemoval = true }
                     .disabled(state.phase.isActive)
             } label: {
-                Image(systemName: "ellipsis").modifier(ProjectControlSurface())
+                HoverableControlSurface {
+                    Image(systemName: "ellipsis")
+                }
             }
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
             .fixedSize()
             .accessibilityLabel("项目操作")
         }
+        .focusEffectDisabled()
     }
 
     private func openInIDEMenu(_ project: Project) -> some View {
         Menu("在 IDE 中打开") {
-            ForEach(ProjectIDE.allCases, id: \.self) { ide in
-                Button(ide.rawValue) {
+            openInIDEMenuContent(project)
+        }
+    }
+
+    @ViewBuilder
+    private func openInIDEMenuContent(_ project: Project) -> some View {
+        if model.installedIDEs.isEmpty {
+            Text("未检测到已安装的 IDE")
+        } else {
+            ForEach(model.installedIDEs) { ide in
+                Button {
                     Task { await model.openProject(project, in: ide) }
+                } label: {
+                    Label {
+                        Text(ide.name)
+                    } icon: {
+                        Image(nsImage: ide.menuIcon)
+                    }
                 }
             }
         }
     }
 
-    private func openCodex(_ project: Project, in terminal: ProjectTerminal) {
-        guard !openingCodex else { return }
-        openingCodex = true
+    @ViewBuilder
+    private func terminalMenuContent(_ project: Project) -> some View {
+        let terminals = model.installedTerminals
+
+        Section("直接打开终端") {
+            ForEach(terminals, id: \.self) { terminal in
+                Button {
+                    openTerminal(project, in: terminal)
+                } label: {
+                    Label("在 \(terminal.rawValue) 中打开", systemImage: "terminal")
+                }
+            }
+        }
+
+        Section("打开 AI CLI") {
+            if model.installedAICLIs.isEmpty {
+                Text("未检测到已安装的 AI CLI")
+            } else if terminals.count == 1, let terminal = terminals.first {
+                ForEach(model.installedAICLIs) { cli in
+                    Button {
+                        openTerminal(project, in: terminal, running: cli)
+                    } label: {
+                        Label(cli.name, systemImage: "sparkles")
+                    }
+                }
+            } else {
+                ForEach(model.installedAICLIs) { cli in
+                    Menu {
+                        ForEach(terminals, id: \.self) { terminal in
+                            Button("在 \(terminal.rawValue) 中打开") {
+                                openTerminal(project, in: terminal, running: cli)
+                            }
+                        }
+                    } label: {
+                        Label(cli.name, systemImage: "sparkles")
+                    }
+                }
+            }
+        }
+    }
+
+    private func openTerminal(_ project: Project, in terminal: ProjectTerminal, running cli: ProjectAICLI? = nil) {
+        guard !openingTerminal else { return }
+        openingTerminal = true
         Task { @MainActor in
-            defer { openingCodex = false }
+            defer { openingTerminal = false }
             do {
-                try await terminal.openCodex(at: project.path)
+                try await terminal.open(at: project.path, running: cli)
             } catch {
                 model.alert = error.localizedDescription
             }
@@ -383,65 +620,143 @@ struct MainView: View {
     }
 
     private func configuration(_ project: Project, state: RunState) -> some View {
-        VStack(alignment: .leading, spacing: 13) {
-            HStack {
-                Text("启动配置").font(.headline)
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 8) {
+                Image(systemName: "slider.horizontal.3")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(LauncherPalette.actionInk)
+                Text("启动配置")
+                    .font(.headline)
                 Spacer()
                 Button("编辑…") { editing = project }
-                    .buttonStyle(ProjectActionStyle())
+                    .buttonStyle(ProjectActionStyle(size: .compact))
+                    .focusEffectDisabled()
                     .disabled(state.phase.isActive)
             }
-            Rectangle().fill(LauncherPalette.line).frame(height: 1)
-            HStack(alignment: .top, spacing: 20) {
-                VStack(alignment: .leading, spacing: 5) {
-                    Text(project.kind == .python ? "Python 环境" : "Node 版本")
-                        .font(.caption).foregroundStyle(.secondary)
+
+            Rectangle().fill(LauncherPalette.lineSubtle).frame(height: 1)
+
+            HStack(alignment: .top, spacing: 18) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Label(
+                        project.kind == .python ? "Python 环境" : "Node 版本",
+                        systemImage: project.kind == .python ? "chevron.left.forwardslash.chevron.right" : "cube"
+                    )
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+
                     let setting = project.kind == .python ? "自动（.venv / venv / PATH）"
                         : (project.nodeVersion ?? "自动（.nvmrc / default）")
-                    Text(state.phase == .running ? state.node ?? setting : setting)
-                        .font(.callout.weight(.medium))
-                        .lineLimit(1)
-                        .help(setting)
+                    let displayRuntime = state.phase == .running ? (state.node ?? setting) : setting
+
+                    HStack(spacing: 6) {
+                        if state.phase == .running && state.node != nil {
+                            Circle()
+                                .fill(LauncherPalette.running)
+                                .frame(width: 6, height: 6)
+                        }
+                        Text(displayRuntime)
+                            .font(.callout.weight(.medium))
+                            .lineLimit(1)
+                            .help(displayRuntime)
+                    }
+
                     if let requirement = project.nodeRequirement {
-                        Text("项目要求 \(requirement)")
-                            .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                        Text("要求 \(requirement)")
+                            .font(.caption2.monospaced())
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(LauncherPalette.surfaceSubtle, in: RoundedRectangle(cornerRadius: 5))
+                            .overlay {
+                                RoundedRectangle(cornerRadius: 5)
+                                    .strokeBorder(LauncherPalette.lineSubtle)
+                            }
                     }
                 }
-                .frame(width: 177, alignment: .leading)
-                VStack(alignment: .leading, spacing: 5) {
-                    Text("启动命令").font(.caption).foregroundStyle(.secondary)
+                .frame(width: 190, alignment: .leading)
+
+                Rectangle()
+                    .fill(LauncherPalette.lineSubtle)
+                    .frame(width: 1)
+                    .padding(.vertical, 2)
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Label("启动命令", systemImage: "terminal")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+
                     if project.hasLaunchCommand {
-                        Text(project.command)
-                            .font(.callout.monospaced())
-                            .lineLimit(2).textSelection(.enabled)
-                            .help(project.command)
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            Text("$")
+                                .font(.callout.monospaced().weight(.semibold))
+                                .foregroundStyle(.tertiary)
+                                .accessibilityHidden(true)
+                            Text(project.command)
+                                .font(.callout.monospaced())
+                                .lineLimit(2)
+                                .textSelection(.enabled)
+                                .help(project.command)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 7)
+                        .background(LauncherPalette.surfaceSubtle, in: RoundedRectangle(cornerRadius: 8))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 8)
+                                .strokeBorder(LauncherPalette.lineSubtle)
+                        }
                     } else {
                         Label("未检测到可用的启动命令。请点击「编辑…」手动填写后再启动。",
                               systemImage: "exclamationmark.triangle")
                             .font(.callout)
-                            .foregroundStyle(.orange)
+                            .foregroundStyle(LauncherPalette.warning)
                             .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 8)
+                            .background(LauncherPalette.warningFill, in: RoundedRectangle(cornerRadius: 8))
+                            .overlay {
+                                RoundedRectangle(cornerRadius: 8)
+                                    .strokeBorder(LauncherPalette.warningEdge)
+                            }
                     }
                 }
             }
+            .fixedSize(horizontal: false, vertical: true)
+
             if let port = project.launchPort {
-                HStack(spacing: 8) {
-                    Text("启动端口").foregroundStyle(.secondary)
-                    Text(port.formatted(.number.grouping(.never))).monospacedDigit()
+                Rectangle().fill(LauncherPalette.lineSubtle).frame(height: 1)
+                HStack(spacing: 10) {
+                    Label("启动端口", systemImage: "network")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+                    Text(":\(port.formatted(.number.grouping(.never)))")
+                        .font(.caption.monospaced().weight(.semibold))
+                        .foregroundStyle(LauncherPalette.actionInk)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 2.5)
+                        .background(LauncherPalette.surfaceSubtle, in: RoundedRectangle(cornerRadius: 5))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 5)
+                                .strokeBorder(LauncherPalette.lineSubtle)
+                        }
                     if !state.phase.isActive {
                         PortStatusLabel(port: port)
                             .id(port)
                     }
+                    Spacer(minLength: 0)
                 }
-                .font(.caption)
             }
         }
-        .padding(15)
+        .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(LauncherPalette.surface, in: RoundedRectangle(cornerRadius: 10))
+        .background(LauncherPalette.surface, in: RoundedRectangle(cornerRadius: 12))
         .overlay {
-            RoundedRectangle(cornerRadius: 10).strokeBorder(LauncherPalette.line)
+            RoundedRectangle(cornerRadius: 12).strokeBorder(LauncherPalette.line)
         }
+        .shadow(color: LauncherPalette.cardShadow(colorScheme), radius: 6, y: 2)
     }
 
     private func refreshFolderAvailability() {
@@ -463,27 +778,64 @@ struct MainView: View {
     }
 }
 
-private enum LauncherPalette {
-    static let canvas = adaptive(0xF5F7FA, 0x1C2229)
-    static let sidebar = adaptive(0xEDF0F4, 0x222930)
-    static let surface = adaptive(0xFCFDFE, 0x272F38)
-    static let line = adaptive(0xDCE3EB, 0x3C4754)
-    static let selection = adaptive(0xDEE7F1, 0x344251)
-    static let selectionEdge = adaptive(0xB2C4D7, 0x667D94)
-    static let actionInk = adaptive(0x42566D, 0xCDD9E6)
-    static let actionFill = adaptive(0x48607A, 0xABC0D6)
-    static let actionLabel = adaptive(0xFFFFFF, 0x1D2B38)
-    static let running = adaptive(0x276247, 0x9BD2B2)
-    static let runningFill = adaptive(0xDFEEE5, 0x2C473B)
-    static let stop = adaptive(0x873F47, 0xF1AEAD)
-    static let stopFill = adaptive(0xF4E7E8, 0x473338)
-    static let stopEdge = adaptive(0xE7CFD1, 0x684A51)
-    static let pending = adaptive(0x795323, 0xDEB783)
+// MARK: - Design System Tokens
 
-    static let consoleBody = Color(nsColor: rgb(0x242B34))
-    static let consoleHeader = Color(nsColor: rgb(0x2E3742))
-    static let consoleLine = Color(nsColor: rgb(0x3B4654))
-    static let consoleText = rgb(0xD8E0EB)
+enum LauncherPalette {
+    static let canvas = adaptive(0xF4F6F9, 0x1A2027)
+    static let sidebar = adaptive(0xECEFF4, 0x20272F)
+    static let surface = adaptive(0xFFFFFF, 0x262E37)
+    static let surfaceSubtle = adaptive(0xF6F8FB, 0x202730)
+    static let surfaceHover = adaptive(0xF0F4F9, 0x2E3844)
+    static let rowHover = adaptive(0xE3E9F1, 0x29323D)
+    static let line = adaptive(0xDCE3EC, 0x36414E)
+    static let lineSubtle = adaptive(0xE8EEF5, 0x2E3844)
+    static let selection = adaptive(0xDDE7F2, 0x324152)
+    static let selectionEdge = adaptive(0xA9BFD6, 0x5C7691)
+    static let focusRing = adaptive(0x5B7A9C, 0x82A3C4)
+    static let actionInk = adaptive(0x3D526A, 0xD0DCE9)
+    static let actionFill = adaptive(0x435B75, 0x9FB8D2)
+    static let actionFillHover = adaptive(0x374D65, 0xB2C8DF)
+    static let actionLabel = adaptive(0xFFFFFF, 0x192531)
+
+    static let running = adaptive(0x236B4B, 0x8DD0AB)
+    static let runningFill = adaptive(0xE2F2E9, 0x253F35)
+    static let runningEdge = adaptive(0xC3E3D1, 0x355C4C)
+
+    static let pending = adaptive(0x8C5D1F, 0xE2BA82)
+    static let pendingFill = adaptive(0xF7EFE2, 0x3E3425)
+    static let pendingEdge = adaptive(0xE9D7BC, 0x594932)
+
+    static let stop = adaptive(0x9A3D47, 0xF2A7A8)
+    static let stopFill = adaptive(0xF7E8EA, 0x462E34)
+    static let stopFillHover = adaptive(0xF1DADF, 0x54363D)
+    static let stopEdge = adaptive(0xE7C8CC, 0x6A454D)
+
+    static let warning = adaptive(0x9E5E1A, 0xE8B270)
+    static let warningFill = adaptive(0xFBF2E6, 0x3B3123)
+    static let warningEdge = adaptive(0xECD7BA, 0x5B4830)
+
+    static let nodeInk = adaptive(0x2E6B4E, 0x8BC7A4)
+    static let nodeFill = adaptive(0xE5F2EB, 0x243A31)
+    static let nodeEdge = adaptive(0xCBE3D6, 0x345446)
+
+    static let pythonInk = adaptive(0x375E85, 0x8DB8E2)
+    static let pythonFill = adaptive(0xE4EEF7, 0x243648)
+    static let pythonEdge = adaptive(0xC8DCEF, 0x364F69)
+
+    static let consoleBody = Color(nsColor: rgb(0x1E252D))
+    static let consoleHeader = Color(nsColor: rgb(0x262F39))
+    static let consoleLine = Color(nsColor: rgb(0x36414F))
+    static let consoleBorder = adaptive(0xCBD5E1, 0x3A4654)
+    static let consoleText = rgb(0xDCE4EF)
+    static let consoleMuted = rgb(0x8B9BB0)
+    static let consoleActionHover = Color.white.opacity(0.09)
+    static let consoleErrorFill = Color(nsColor: rgb(0x36272C))
+    static let consoleErrorInk = Color(nsColor: rgb(0xF3B7B2))
+    static let consoleInfoFill = Color(nsColor: rgb(0x26313E))
+
+    static func cardShadow(_ scheme: ColorScheme) -> Color {
+        Color.black.opacity(scheme == .dark ? 0.24 : 0.045)
+    }
 
     private static func adaptive(_ light: UInt32, _ dark: UInt32) -> Color {
         Color(nsColor: NSColor(name: nil) { appearance in
@@ -498,47 +850,282 @@ private enum LauncherPalette {
     }
 }
 
-private enum ActionTone {
+// MARK: - Shared Controls & Badges
+
+enum ActionTone {
     case neutral, primary, stop
 
-    var colors: (label: Color, fill: Color, edge: Color) {
+    func colors(hovering: Bool) -> (label: Color, fill: Color, edge: Color) {
         switch self {
-        case .neutral: (LauncherPalette.actionInk, LauncherPalette.surface, LauncherPalette.line)
-        case .primary: (LauncherPalette.actionLabel, LauncherPalette.actionFill, LauncherPalette.actionFill)
-        case .stop: (LauncherPalette.stop, LauncherPalette.stopFill, LauncherPalette.stopEdge)
+        case .neutral:
+            (
+                LauncherPalette.actionInk,
+                hovering ? LauncherPalette.surfaceHover : LauncherPalette.surface,
+                hovering ? LauncherPalette.selectionEdge : LauncherPalette.line
+            )
+        case .primary:
+            (
+                LauncherPalette.actionLabel,
+                hovering ? LauncherPalette.actionFillHover : LauncherPalette.actionFill,
+                hovering ? LauncherPalette.actionFillHover : LauncherPalette.actionFill
+            )
+        case .stop:
+            (
+                LauncherPalette.stop,
+                hovering ? LauncherPalette.stopFillHover : LauncherPalette.stopFill,
+                LauncherPalette.stopEdge
+            )
         }
     }
 }
 
-private struct ProjectControlSurface: ViewModifier {
+enum ControlSizeVariant {
+    case regular, compact
+
+    var horizontalPadding: CGFloat { self == .compact ? 9 : 11 }
+    var minHeight: CGFloat { self == .compact ? 26 : 31 }
+    var minWidth: CGFloat { self == .compact ? 28 : 32 }
+    var cornerRadius: CGFloat { self == .compact ? 7 : 8 }
+    var font: Font { self == .compact ? .caption.weight(.medium) : .callout.weight(.medium) }
+}
+
+struct ProjectControlSurface: ViewModifier {
     @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.colorScheme) private var colorScheme
     var tone: ActionTone = .neutral
+    var size: ControlSizeVariant = .regular
+    var hovering = false
     var pressed = false
 
     func body(content: Content) -> some View {
-        let colors = tone.colors
+        let colors = tone.colors(hovering: hovering && isEnabled)
         content
-            .font(.callout.weight(.medium))
+            .font(size.font)
             .foregroundStyle(colors.label)
-            .padding(.horizontal, 10)
-            .frame(minWidth: 31, minHeight: 30)
-            .background(colors.fill, in: RoundedRectangle(cornerRadius: 7))
-            .overlay { RoundedRectangle(cornerRadius: 7).strokeBorder(colors.edge) }
-            .opacity(isEnabled ? (pressed ? 0.72 : 1) : 0.48)
+            .padding(.horizontal, size.horizontalPadding)
+            .frame(minWidth: size.minWidth, minHeight: size.minHeight)
+            .background(colors.fill, in: RoundedRectangle(cornerRadius: size.cornerRadius))
+            .overlay {
+                RoundedRectangle(cornerRadius: size.cornerRadius)
+                    .strokeBorder(colors.edge)
+            }
+            .shadow(
+                color: tone == .primary && isEnabled
+                    ? Color.black.opacity(colorScheme == .dark ? 0.25 : 0.08)
+                    : .clear,
+                radius: 3, y: 1
+            )
+            .scaleEffect(pressed ? 0.98 : 1)
+            .opacity(isEnabled ? (pressed ? 0.84 : 1) : 0.45)
+            .animation(.easeOut(duration: 0.12), value: hovering)
+            .animation(.easeOut(duration: 0.08), value: pressed)
             .contentShape(Rectangle())
     }
 }
 
-private struct ProjectActionStyle: ButtonStyle {
+private struct HoverableControlSurface<Content: View>: View {
     var tone: ActionTone = .neutral
+    var size: ControlSizeVariant = .regular
+    @ViewBuilder let content: () -> Content
+    @State private var hovering = false
 
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label.modifier(ProjectControlSurface(tone: tone, pressed: configuration.isPressed))
+    var body: some View {
+        content()
+            .modifier(ProjectControlSurface(tone: tone, size: size, hovering: hovering))
+            .onHover { hovering = $0 }
     }
 }
 
-private struct StatusLabel: View {
+struct ProjectActionStyle: ButtonStyle {
+    var tone: ActionTone = .neutral
+    var size: ControlSizeVariant = .regular
+
+    func makeBody(configuration: Configuration) -> some View {
+        ActionButtonBody(configuration: configuration, tone: tone, size: size)
+    }
+
+    private struct ActionButtonBody: View {
+        let configuration: Configuration
+        let tone: ActionTone
+        let size: ControlSizeVariant
+        @State private var hovering = false
+
+        var body: some View {
+            configuration.label
+                .modifier(ProjectControlSurface(
+                    tone: tone,
+                    size: size,
+                    hovering: hovering,
+                    pressed: configuration.isPressed
+                ))
+                .onHover { hovering = $0 }
+        }
+    }
+}
+
+private struct SidebarIconButton: View {
+    let systemImage: String
+    let accessibilityLabel: String
+    let helpText: String
+    let action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(LauncherPalette.actionInk)
+                .frame(width: 26, height: 26)
+                .background(
+                    hovering ? LauncherPalette.rowHover : Color.clear,
+                    in: RoundedRectangle(cornerRadius: 6)
+                )
+                .overlay {
+                    if hovering {
+                        RoundedRectangle(cornerRadius: 6)
+                            .strokeBorder(LauncherPalette.line)
+                    }
+                }
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .animation(.easeOut(duration: 0.12), value: hovering)
+        .accessibilityLabel(accessibilityLabel)
+        .help(helpText)
+    }
+}
+
+struct ProjectKindIcon: View {
+    let kind: ProjectKind
+    var size: CGFloat = 28
+
+    private var label: String { kind == .python ? "PY" : "JS" }
+    private var ink: Color { kind == .python ? LauncherPalette.pythonInk : LauncherPalette.nodeInk }
+    private var fill: Color { kind == .python ? LauncherPalette.pythonFill : LauncherPalette.nodeFill }
+    private var edge: Color { kind == .python ? LauncherPalette.pythonEdge : LauncherPalette.nodeEdge }
+
+    var body: some View {
+        Text(label)
+            .font(.system(size: size * 0.36, weight: .bold, design: .rounded))
+            .foregroundStyle(ink)
+            .frame(width: size, height: size)
+            .background(fill, in: RoundedRectangle(cornerRadius: size * 0.27))
+            .overlay {
+                RoundedRectangle(cornerRadius: size * 0.27)
+                    .strokeBorder(edge)
+            }
+            .accessibilityHidden(true)
+    }
+}
+
+struct ProjectKindBadge: View {
+    let kind: ProjectKind
+
+    private var ink: Color { kind == .python ? LauncherPalette.pythonInk : LauncherPalette.nodeInk }
+    private var fill: Color { kind == .python ? LauncherPalette.pythonFill : LauncherPalette.nodeFill }
+    private var edge: Color { kind == .python ? LauncherPalette.pythonEdge : LauncherPalette.nodeEdge }
+
+    var body: some View {
+        Text(kind.rawValue)
+            .font(.caption.weight(.medium))
+            .foregroundStyle(ink)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 2.5)
+            .background(fill, in: Capsule())
+            .overlay { Capsule().strokeBorder(edge) }
+    }
+}
+
+private struct ProjectRowView: View {
+    let project: Project
     let phase: RunPhase
+    let selected: Bool
+    let listFocused: Bool
+    let onSelect: () -> Void
+    @State private var hovering = false
+
+    private var parentFolder: String {
+        URL(fileURLWithPath: project.path).deletingLastPathComponent().lastPathComponent
+    }
+
+    var body: some View {
+        Button(action: onSelect) {
+            HStack(spacing: 10) {
+                ProjectKindIcon(kind: project.kind, size: 28)
+
+                VStack(alignment: .leading, spacing: 2.5) {
+                    Text(project.listName)
+                        .font(.callout.weight(selected ? .semibold : .medium))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+
+                    HStack(spacing: 5) {
+                        Text(parentFolder)
+                            .lineLimit(1)
+                        if let port = project.launchPort {
+                            Text("·")
+                            Text(":\(port.formatted(.number.grouping(.never)))")
+                                .monospacedDigit()
+                        }
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                if phase.isActive {
+                    StatusLabel(phase: phase, style: .compact).fixedSize()
+                } else if phase == .failed {
+                    Circle()
+                        .fill(LauncherPalette.stop)
+                        .frame(width: 7, height: 7)
+                        .help("上次运行失败")
+                }
+            }
+            .padding(.leading, 10)
+            .padding(.trailing, 9)
+            .padding(.vertical, 7.5)
+            .background {
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(
+                        selected
+                            ? LauncherPalette.selection
+                            : (hovering ? LauncherPalette.rowHover : Color.clear)
+                    )
+            }
+            .overlay(alignment: .leading) {
+                if selected {
+                    Capsule()
+                        .fill(phase == .running ? LauncherPalette.running : LauncherPalette.actionFill)
+                        .frame(width: 3, height: 18)
+                        .padding(.leading, 2.5)
+                }
+            }
+            .overlay {
+                if selected {
+                    RoundedRectangle(cornerRadius: 8)
+                        .strokeBorder(listFocused ? LauncherPalette.selectionEdge : LauncherPalette.line)
+                }
+            }
+            .animation(.easeOut(duration: 0.12), value: hovering)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .accessibilityAddTraits(selected ? .isSelected : [])
+        .help(project.path)
+    }
+}
+
+struct StatusLabel: View {
+    enum Style {
+        case compact
+        case pill
+    }
+
+    let phase: RunPhase
+    var style: Style = .compact
 
     private var color: Color {
         switch phase {
@@ -549,77 +1136,174 @@ private struct StatusLabel: View {
         }
     }
 
+    private var fill: Color {
+        switch phase {
+        case .running: LauncherPalette.runningFill
+        case .starting, .installing, .stopping: LauncherPalette.pendingFill
+        case .failed: LauncherPalette.stopFill
+        default: LauncherPalette.surface
+        }
+    }
+
+    private var edge: Color {
+        switch phase {
+        case .running: LauncherPalette.runningEdge
+        case .starting, .installing, .stopping: LauncherPalette.pendingEdge
+        case .failed: LauncherPalette.stopEdge
+        default: LauncherPalette.line
+        }
+    }
+
+    private var showBadge: Bool {
+        style == .pill || phase == .running || phase == .starting || phase == .installing || phase == .stopping
+    }
+
     var body: some View {
         HStack(spacing: 5) {
-            Circle().fill(color).frame(width: 6, height: 6).accessibilityHidden(true)
+            Circle()
+                .fill(color)
+                .frame(width: 6, height: 6)
+                .accessibilityHidden(true)
             Text(phase.rawValue)
         }
         .font(.caption.weight(.medium))
         .foregroundStyle(phase.isActive || phase == .failed ? color : .secondary)
-        .padding(.horizontal, phase == .running ? 7 : 0)
-        .padding(.vertical, phase == .running ? 3 : 0)
+        .padding(.horizontal, showBadge ? 8 : 0)
+        .padding(.vertical, showBadge ? 2.5 : 0)
         .background {
-            if phase == .running {
-                Capsule().fill(LauncherPalette.runningFill)
+            if showBadge {
+                Capsule().fill(fill)
+            }
+        }
+        .overlay {
+            if showBadge {
+                Capsule().strokeBorder(edge)
             }
         }
     }
 }
 
+// MARK: - Console View
+
 private struct ConsoleView: View {
+    @Environment(\.colorScheme) private var colorScheme
     let state: RunState
+    let clearLog: () -> Void
     let installAndRestart: () -> Void
+    @State private var copied = false
+    @State private var copyResetTask: Task<Void, Never>?
 
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
                 Image(systemName: "terminal")
-                Text("运行日志").fontWeight(.semibold)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Color(nsColor: LauncherPalette.consoleMuted))
+                Text("运行日志")
+                    .font(.callout.weight(.semibold))
+                    .foregroundStyle(Color(nsColor: LauncherPalette.consoleText))
+
+                if state.phase == .running || state.phase == .starting || state.phase == .installing {
+                    HStack(spacing: 5) {
+                        Circle()
+                            .fill(state.phase == .running ? LauncherPalette.running : LauncherPalette.pending)
+                            .frame(width: 6, height: 6)
+                        Text(state.phase == .running ? "实时输出" : state.phase.rawValue)
+                            .font(.caption2.weight(.medium))
+                            .foregroundStyle(Color(nsColor: LauncherPalette.consoleMuted))
+                    }
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 2.5)
+                    .background(Color.white.opacity(0.06), in: Capsule())
+                }
+
                 Spacer()
-                Button {
+
+                ConsoleHeaderButton(
+                    title: "清空",
+                    systemImage: "trash",
+                    tint: Color(nsColor: LauncherPalette.consoleMuted),
+                    disabled: state.log.isEmpty,
+                    action: clearLog
+                )
+
+                ConsoleHeaderButton(
+                    title: copied ? "已复制" : "复制日志",
+                    systemImage: copied ? "checkmark" : "document.on.document",
+                    tint: copied ? LauncherPalette.running : Color(nsColor: LauncherPalette.consoleText),
+                    disabled: state.log.isEmpty
+                ) {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(state.log, forType: .string)
-                } label: {
-                    Label("复制日志", systemImage: "document.on.document")
+                    copyResetTask?.cancel()
+                    withAnimation(.easeInOut(duration: 0.14)) { copied = true }
+                    copyResetTask = Task {
+                        try? await Task.sleep(for: .seconds(1.5))
+                        guard !Task.isCancelled else { return }
+                        await MainActor.run {
+                            withAnimation(.easeInOut(duration: 0.14)) { copied = false }
+                        }
+                    }
                 }
-                .buttonStyle(.plain)
-                .disabled(state.log.isEmpty)
             }
-            .font(.callout)
-            .foregroundStyle(Color(nsColor: LauncherPalette.consoleText))
-            .padding(.horizontal, 13).padding(.vertical, 10)
+            .padding(.horizontal, 13)
+            .padding(.vertical, 9)
             .background(LauncherPalette.consoleHeader)
 
             Rectangle().fill(LauncherPalette.consoleLine).frame(height: 1)
 
-            ConsoleText(text: state.log.isEmpty ? placeholder : state.log)
-                .frame(minHeight: 120, maxHeight: .infinity)
+            ConsoleText(
+                text: state.log.isEmpty ? placeholder : state.log,
+                isPlaceholder: state.log.isEmpty
+            )
+            .frame(minHeight: 120, maxHeight: .infinity)
 
             if let message = state.message {
-                HStack(alignment: .top, spacing: 8) {
-                    Image(systemName: state.phase == .failed ? "exclamationmark.circle" : "info.circle")
+                Rectangle().fill(LauncherPalette.consoleLine).frame(height: 1)
+                HStack(alignment: .center, spacing: 10) {
+                    Image(systemName: state.phase == .failed ? "exclamationmark.circle.fill" : "info.circle.fill")
+                        .font(.system(size: 14))
                         .accessibilityHidden(true)
                     VStack(alignment: .leading, spacing: 4) {
                         Text(message)
+                            .font(.callout.weight(.medium))
                         if let command = state.installCommand {
-                            Text(command).font(.callout.monospaced()).textSelection(.enabled)
+                            Text(command)
+                                .font(.caption.monospaced())
+                                .textSelection(.enabled)
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 3)
+                                .background(Color.black.opacity(0.24), in: RoundedRectangle(cornerRadius: 5))
                         }
                     }
                     Spacer()
                     if state.phase == .failed && state.install != nil {
                         Button("安装并重启", action: installAndRestart)
-                            .buttonStyle(ProjectActionStyle())
+                            .buttonStyle(ProjectActionStyle(tone: .primary, size: .compact))
+                            .focusEffectDisabled()
                     }
                 }
-                .font(.callout)
-                .foregroundStyle(state.phase == .failed ? Color(red: 0.92, green: 0.75, blue: 0.71) :
-                    Color(nsColor: LauncherPalette.consoleText))
-                .padding(12)
-                .background(LauncherPalette.consoleHeader)
+                .foregroundStyle(
+                    state.phase == .failed
+                        ? LauncherPalette.consoleErrorInk
+                        : Color(nsColor: LauncherPalette.consoleText)
+                )
+                .padding(.horizontal, 13)
+                .padding(.vertical, 11)
+                .background(
+                    state.phase == .failed
+                        ? LauncherPalette.consoleErrorFill
+                        : LauncherPalette.consoleInfoFill
+                )
             }
         }
         .background(LauncherPalette.consoleBody)
-        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .overlay {
+            RoundedRectangle(cornerRadius: 12)
+                .strokeBorder(LauncherPalette.consoleBorder)
+        }
+        .shadow(color: LauncherPalette.cardShadow(colorScheme), radius: 8, y: 3)
     }
 
     private var placeholder: String {
@@ -632,10 +1316,50 @@ private struct ConsoleView: View {
     }
 }
 
+private struct ConsoleHeaderButton: View {
+    let title: String
+    let systemImage: String
+    let tint: Color
+    let disabled: Bool
+    let action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Label(title, systemImage: systemImage)
+                .font(.caption.weight(.medium))
+                .foregroundStyle(tint)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4.5)
+                .background(
+                    hovering && !disabled ? LauncherPalette.consoleActionHover : Color.clear,
+                    in: RoundedRectangle(cornerRadius: 6)
+                )
+                .opacity(disabled ? 0.4 : 1)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(disabled)
+        .onHover { hovering = $0 }
+        .animation(.easeOut(duration: 0.12), value: hovering)
+    }
+}
+
 private struct ConsoleText: NSViewRepresentable {
     let text: String
+    let isPlaceholder: Bool
     private static let font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
-    private static let foreground = LauncherPalette.consoleText
+    private static let paragraphStyle: NSParagraphStyle = {
+        let style = NSMutableParagraphStyle()
+        style.lineSpacing = 3.5
+        return style
+    }()
+
+    final class Coordinator {
+        var lastPlaceholder: Bool?
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeNSView(context: Context) -> NSScrollView {
         let scroll = NSTextView.scrollableTextView()
@@ -649,21 +1373,29 @@ private struct ConsoleText: NSViewRepresentable {
         view.isEditable = false
         view.isSelectable = true
         view.isRichText = false
-        view.textContainerInset = NSSize(width: 10, height: 10)
+        view.textContainerInset = NSSize(width: 12, height: 12)
         view.font = Self.font
-        view.textColor = Self.foreground
+        view.textColor = LauncherPalette.consoleText
         view.setAccessibilityLabel("运行日志")
         return scroll
     }
 
     func updateNSView(_ scroll: NSScrollView, context: Context) {
-        guard let view = scroll.documentView as? NSTextView, let storage = view.textStorage,
-              view.string != text else { return }
+        guard let view = scroll.documentView as? NSTextView, let storage = view.textStorage else { return }
+        let placeholderChanged = context.coordinator.lastPlaceholder != isPlaceholder
+        guard view.string != text || placeholderChanged else { return }
+        context.coordinator.lastPlaceholder = isPlaceholder
+
         let bounds = scroll.contentView.bounds
         let follow = view.bounds.maxY - bounds.maxY < 26 && view.selectedRange().length == 0
         let old = view.string
-        let attributes: [NSAttributedString.Key: Any] = [.font: Self.font, .foregroundColor: Self.foreground]
-        if text.hasPrefix(old) {
+        let foreground = isPlaceholder ? LauncherPalette.consoleMuted : LauncherPalette.consoleText
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: Self.font,
+            .foregroundColor: foreground,
+            .paragraphStyle: Self.paragraphStyle,
+        ]
+        if !placeholderChanged && text.hasPrefix(old) {
             let tail = String(text.dropFirst(old.count))
             storage.append(NSAttributedString(string: tail, attributes: attributes))
         } else {
