@@ -35,7 +35,22 @@ struct GitRepositoryStatus: Equatable, Sendable {
         if stagedCount > 0 { parts.append("\(stagedCount) 已暂存") }
         if unstagedCount > 0 { parts.append("\(unstagedCount) 未暂存") }
         if untrackedCount > 0 { parts.append("\(untrackedCount) 未跟踪") }
-        return parts.isEmpty ? "工作区干净" : parts.joined(separator: " · ")
+        return parts.isEmpty ? "无未提交变更" : "未提交变更：" + parts.joined(separator: " · ")
+    }
+
+    var overviewSummary: String {
+        var parts: [String] = ["分支 \(branch)"]
+        if conflictedCount > 0 {
+            parts.append("\(conflictedCount) 处冲突")
+        } else if isDirty {
+            parts.append("\(changedCount) 项未提交")
+        }
+        if behind > 0 { parts.append("待拉取 \(behind)") }
+        if ahead > 0 { parts.append("待推送 \(ahead)") }
+        if parts.count == 1 {
+            parts.append(upstream != nil ? "已同步" : "无未提交")
+        }
+        return parts.joined(separator: " · ")
     }
 }
 

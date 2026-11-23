@@ -640,7 +640,33 @@ struct MainView: View {
 
     private func gitBar(_ project: Project, status: GitRepositoryStatus) -> some View {
         let busy = model.isGitBusy(project.id)
-        return HStack(spacing: 10) {
+        return ViewThatFits(in: .horizontal) {
+            HStack(spacing: 10) {
+                gitStatusCluster(project, status: status, busy: busy)
+                Spacer(minLength: 8)
+                gitActionButtons(project, status: status, busy: busy)
+            }
+            VStack(alignment: .leading, spacing: 8) {
+                gitStatusCluster(project, status: status, busy: busy)
+                HStack {
+                    Spacer(minLength: 0)
+                    gitActionButtons(project, status: status, busy: busy)
+                }
+            }
+        }
+        .padding(.horizontal, 13)
+        .padding(.vertical, 9)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(LauncherPalette.surface, in: RoundedRectangle(cornerRadius: 11))
+        .overlay {
+            RoundedRectangle(cornerRadius: 11).strokeBorder(LauncherPalette.line)
+        }
+        .shadow(color: LauncherPalette.cardShadow(colorScheme), radius: 5, y: 1.5)
+        .animation(.easeInOut(duration: 0.16), value: model.gitNotices[project.id])
+    }
+
+    private func gitStatusCluster(_ project: Project, status: GitRepositoryStatus, busy: Bool) -> some View {
+        HStack(spacing: 8) {
             Menu {
                 Section("切换本地分支") {
                     if status.branches.isEmpty {
@@ -688,59 +714,57 @@ struct MainView: View {
             .fixedSize()
             .help(status.upstream.map { "当前分支：\(status.branch)（跟踪 \($0)）" } ?? "当前分支：\(status.branch)")
 
-            if status.isDirty {
-                HStack(spacing: 5) {
-                    Circle()
-                        .fill(status.conflictedCount > 0 ? LauncherPalette.stop : LauncherPalette.warning)
-                        .frame(width: 6, height: 6)
-                    Text("\(status.changedCount) 处变更")
-                        .font(.caption.weight(.medium))
-                        .monospacedDigit()
-                }
-                .foregroundStyle(status.conflictedCount > 0 ? LauncherPalette.stop : LauncherPalette.warning)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 3.5)
-                .background(
-                    status.conflictedCount > 0 ? LauncherPalette.stopFill : LauncherPalette.warningFill,
-                    in: Capsule()
+            if status.conflictedCount > 0 {
+                gitBadge(
+                    icon: "exclamationmark.triangle.fill",
+                    text: "\(status.conflictedCount) 处冲突",
+                    ink: LauncherPalette.stop,
+                    fill: LauncherPalette.stopFill,
+                    edge: LauncherPalette.stopEdge
                 )
-                .overlay {
-                    Capsule().strokeBorder(
-                        status.conflictedCount > 0 ? LauncherPalette.stopEdge : LauncherPalette.warningEdge
-                    )
-                }
                 .help(status.changeSummary)
-            } else {
-                HStack(spacing: 5) {
-                    Image(systemName: "checkmark")
-                        .font(.system(size: 9.5, weight: .bold))
-                    Text("工作区干净")
-                        .font(.caption.weight(.medium))
-                }
-                .foregroundStyle(LauncherPalette.running)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 3.5)
-                .background(LauncherPalette.runningFill, in: Capsule())
-                .overlay { Capsule().strokeBorder(LauncherPalette.runningEdge) }
+            } else if status.isDirty {
+                gitBadge(
+                    icon: "pencil",
+                    text: "\(status.changedCount) 项未提交",
+                    ink: LauncherPalette.warning,
+                    fill: LauncherPalette.warningFill,
+                    edge: LauncherPalette.warningEdge
+                )
+                .help(status.changeSummary)
             }
 
-            if status.ahead > 0 || status.behind > 0 {
-                HStack(spacing: 6) {
-                    if status.behind > 0 {
-                        Text("↓\(status.behind)")
-                            .foregroundStyle(LauncherPalette.warning)
-                    }
-                    if status.ahead > 0 {
-                        Text("↑\(status.ahead)")
-                            .foregroundStyle(LauncherPalette.actionInk)
-                    }
-                }
-                .font(.caption.monospaced().weight(.semibold))
-                .padding(.horizontal, 8)
-                .padding(.vertical, 3.5)
-                .background(LauncherPalette.surfaceSubtle, in: Capsule())
-                .overlay { Capsule().strokeBorder(LauncherPalette.line) }
-                .help("落后远程 \(status.behind) 个提交，领先远程 \(status.ahead) 个提交")
+            if status.behind > 0 {
+                gitBadge(
+                    icon: "arrow.down.circle.fill",
+                    text: "待拉取 \(status.behind)",
+                    ink: LauncherPalette.pythonInk,
+                    fill: LauncherPalette.pythonFill,
+                    edge: LauncherPalette.pythonEdge
+                )
+                .help("远程 \(status.upstream ?? "分支") 有 \(status.behind) 个新提交待拉取")
+            }
+
+            if status.ahead > 0 {
+                gitBadge(
+                    icon: "arrow.up.circle.fill",
+                    text: "待推送 \(status.ahead)",
+                    ink: LauncherPalette.actionInk,
+                    fill: LauncherPalette.selection,
+                    edge: LauncherPalette.selectionEdge
+                )
+                .help("本地有 \(status.ahead) 个已提交但尚未推送到远程的提交")
+            }
+
+            if !status.isDirty && status.behind == 0 && status.ahead == 0 {
+                gitBadge(
+                    icon: "checkmark",
+                    text: status.upstream != nil ? "已同步" : "无未提交",
+                    ink: LauncherPalette.running,
+                    fill: LauncherPalette.runningFill,
+                    edge: LauncherPalette.runningEdge
+                )
+                .help(status.upstream != nil ? "工作区无未提交变更，且与远程分支保持同步" : "工作区无未提交变更")
             }
 
             if busy {
@@ -751,72 +775,81 @@ struct MainView: View {
                     .font(.caption.weight(.medium))
                     .foregroundStyle(LauncherPalette.running)
                     .lineLimit(1)
+                    .fixedSize()
                     .transition(.opacity)
             }
+        }
+    }
 
-            Spacer(minLength: 4)
+    private func gitBadge(icon: String, text: String, ink: Color, fill: Color, edge: Color) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: icon)
+                .font(.system(size: 10, weight: .semibold))
+            Text(text)
+                .font(.caption.weight(.medium))
+                .monospacedDigit()
+        }
+        .foregroundStyle(ink)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 3.5)
+        .background(fill, in: Capsule())
+        .overlay { Capsule().strokeBorder(edge) }
+        .fixedSize()
+    }
 
-            HStack(spacing: 6) {
-                Button {
-                    model.gitFetch(for: project)
-                } label: {
-                    Image(systemName: "arrow.triangle.2.circlepath")
-                }
-                .buttonStyle(ProjectActionStyle(size: .compact))
-                .disabled(busy)
-                .help("获取远程更新（git fetch）")
-                .accessibilityLabel("获取远程更新")
-
-                Button {
-                    model.gitPull(for: project)
-                } label: {
-                    Label("拉取", systemImage: "arrow.down")
-                }
-                .buttonStyle(ProjectActionStyle(size: .compact))
-                .disabled(busy)
-                .help(status.behind > 0 ? "拉取远程 \(status.behind) 个新提交（git pull）" : "拉取最新代码（git pull）")
-
-                Button {
-                    model.gitPush(for: project)
-                } label: {
-                    Label("推送", systemImage: "arrow.up")
-                }
-                .buttonStyle(ProjectActionStyle(size: .compact))
-                .disabled(busy || status.isDetached)
-                .help(status.ahead > 0 ? "推送 \(status.ahead) 个提交到远程（git push）" : "推送代码到远程（git push）")
-
-                Button {
-                    showingGitHistory.toggle()
-                } label: {
-                    Label("记录", systemImage: "clock.arrow.circlepath")
-                }
-                .buttonStyle(ProjectActionStyle(size: .compact))
-                .popover(isPresented: $showingGitHistory, arrowEdge: .bottom) {
-                    GitHistoryPopover(status: status)
-                }
-                .help("查看最近提交记录")
-
-                Button {
-                    model.refreshGit(for: project)
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                }
-                .buttonStyle(ProjectActionStyle(size: .compact))
-                .disabled(busy)
-                .help("刷新 Git 状态")
-                .accessibilityLabel("刷新 Git 状态")
+    private func gitActionButtons(_ project: Project, status: GitRepositoryStatus, busy: Bool) -> some View {
+        HStack(spacing: 6) {
+            Button {
+                model.gitFetch(for: project)
+            } label: {
+                Image(systemName: "arrow.triangle.2.circlepath")
             }
-            .focusEffectDisabled()
+            .buttonStyle(ProjectActionStyle(size: .compact))
+            .disabled(busy)
+            .help("检查远程更新（git fetch）")
+            .accessibilityLabel("检查远程更新")
+
+            Button {
+                model.gitPull(for: project)
+            } label: {
+                Label("拉取", systemImage: "arrow.down")
+            }
+            .buttonStyle(ProjectActionStyle(size: .compact))
+            .disabled(busy)
+            .help(status.behind > 0 ? "拉取远程 \(status.behind) 个待拉取提交（git pull）" : "拉取最新代码（git pull）")
+
+            Button {
+                model.gitPush(for: project)
+            } label: {
+                Label("推送", systemImage: "arrow.up")
+            }
+            .buttonStyle(ProjectActionStyle(size: .compact))
+            .disabled(busy || status.isDetached)
+            .help(status.ahead > 0 ? "推送 \(status.ahead) 个待推送提交到远程（git push）" : "推送代码到远程（git push）")
+
+            Button {
+                showingGitHistory.toggle()
+            } label: {
+                Label("记录", systemImage: "clock.arrow.circlepath")
+            }
+            .buttonStyle(ProjectActionStyle(size: .compact))
+            .popover(isPresented: $showingGitHistory, arrowEdge: .bottom) {
+                GitHistoryPopover(status: status)
+            }
+            .help("查看最近提交记录")
+
+            Button {
+                model.refreshGit(for: project)
+            } label: {
+                Image(systemName: "arrow.clockwise")
+            }
+            .buttonStyle(ProjectActionStyle(size: .compact))
+            .disabled(busy)
+            .help("刷新本地 Git 状态")
+            .accessibilityLabel("刷新 Git 状态")
         }
-        .padding(.horizontal, 13)
-        .padding(.vertical, 9)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(LauncherPalette.surface, in: RoundedRectangle(cornerRadius: 11))
-        .overlay {
-            RoundedRectangle(cornerRadius: 11).strokeBorder(LauncherPalette.line)
-        }
-        .shadow(color: LauncherPalette.cardShadow(colorScheme), radius: 5, y: 1.5)
-        .animation(.easeInOut(duration: 0.16), value: model.gitNotices[project.id])
+        .fixedSize()
+        .focusEffectDisabled()
     }
 
     private func configuration(_ project: Project, state: RunState) -> some View {
@@ -1263,15 +1296,29 @@ private struct ProjectRowView: View {
 
                     HStack(spacing: 5) {
                         if let git = gitStatus {
-                            HStack(spacing: 3) {
+                            HStack(spacing: 4) {
                                 Image(systemName: "arrow.triangle.branch")
                                     .font(.system(size: 9.5, weight: .medium))
                                 Text(git.branch)
                                     .lineLimit(1)
                                 if git.isDirty {
-                                    Circle()
-                                        .fill(LauncherPalette.warning)
-                                        .frame(width: 5, height: 5)
+                                    HStack(spacing: 1.5) {
+                                        Image(systemName: git.conflictedCount > 0 ? "exclamationmark.triangle.fill" : "pencil")
+                                            .font(.system(size: 8.5, weight: .semibold))
+                                        Text("\(git.changedCount)")
+                                            .monospacedDigit()
+                                    }
+                                    .foregroundStyle(git.conflictedCount > 0 ? LauncherPalette.stop : LauncherPalette.warning)
+                                }
+                                if git.behind > 0 {
+                                    Text("↓\(git.behind)")
+                                        .monospacedDigit()
+                                        .foregroundStyle(LauncherPalette.pythonInk)
+                                }
+                                if git.ahead > 0 {
+                                    Text("↑\(git.ahead)")
+                                        .monospacedDigit()
+                                        .foregroundStyle(LauncherPalette.actionInk)
                                 }
                             }
                         } else {
@@ -1329,7 +1376,7 @@ private struct ProjectRowView: View {
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
         .accessibilityAddTraits(selected ? .isSelected : [])
-        .help(project.path)
+        .help(gitStatus.map { "\(project.path)\n\($0.overviewSummary)" } ?? project.path)
     }
 }
 
