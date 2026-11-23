@@ -51,8 +51,13 @@ struct ImportSheet: View {
                                 .font(.caption.monospaced()).foregroundStyle(.secondary)
                                 .lineLimit(1).truncationMode(.middle)
                             if !alreadyAdded {
-                                Text(candidate.suggestedCommand.isEmpty ? "需要填写启动命令" : candidate.suggestedCommand)
-                                    .font(.caption).foregroundStyle(.secondary)
+                                if candidate.suggestedCommand.isEmpty {
+                                    Label("未检测到可用的启动命令，导入后需手动填写。", systemImage: "exclamationmark.triangle")
+                                        .font(.caption).foregroundStyle(.orange)
+                                } else {
+                                    Text(candidate.suggestedCommand)
+                                        .font(.caption).foregroundStyle(.secondary)
+                                }
                             }
                         }
                     }
@@ -153,8 +158,7 @@ struct ProjectEditor: View {
     private var cleanedVersion: String { version.trimmingCharacters(in: .whitespacesAndNewlines) }
 
     private var canSave: Bool {
-        let hasCommand = !project.command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        guard hasCommand && !project.command.utf8.contains(0) else { return false }
+        guard project.hasLaunchCommand && !project.command.utf8.contains(0) else { return false }
         if project.kind == .python { return true }
         let validVersion = mode == .automatic || NVM.validSelector(cleanedVersion)
         let installed = mode != .installed || model.versions.contains(cleanedVersion)

@@ -317,7 +317,7 @@ struct MainView: View {
                 }
                 .keyboardShortcut(.return, modifiers: .command)
                 .buttonStyle(ProjectActionStyle(tone: .primary))
-                .disabled(project.command.isEmpty)
+                .disabled(!project.hasLaunchCommand)
             }
 
             Menu {
@@ -398,11 +398,18 @@ struct MainView: View {
                 .frame(width: 177, alignment: .leading)
                 VStack(alignment: .leading, spacing: 5) {
                     Text("启动命令").font(.caption).foregroundStyle(.secondary)
-                    Text(project.command.isEmpty ? "请填写启动命令" : project.command)
-                        .font(.callout.monospaced())
-                        .foregroundStyle(project.command.isEmpty ? .secondary : .primary)
-                        .lineLimit(2).textSelection(.enabled)
-                        .help(project.command)
+                    if project.hasLaunchCommand {
+                        Text(project.command)
+                            .font(.callout.monospaced())
+                            .lineLimit(2).textSelection(.enabled)
+                            .help(project.command)
+                    } else {
+                        Label("未检测到可用的启动命令。请点击「编辑…」手动填写后再启动。",
+                              systemImage: "exclamationmark.triangle")
+                            .font(.callout)
+                            .foregroundStyle(.orange)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
             }
         }

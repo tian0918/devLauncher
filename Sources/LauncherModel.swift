@@ -230,7 +230,7 @@ final class LauncherModel: ObservableObject {
 
     func start(_ project: Project) {
         guard !terminating, !runState(project.id).phase.isActive else { return }
-        guard !project.command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        guard project.hasLaunchCommand else {
             fail(project.id, "请先填写启动命令。")
             return
         }

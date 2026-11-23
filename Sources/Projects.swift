@@ -17,6 +17,7 @@ struct Project: Codable, Identifiable, Equatable {
 
     var listName: String { listAlias ?? name }
     var kind: ProjectKind { projectKind ?? .node }
+    var hasLaunchCommand: Bool { !command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 
     init(candidate: ProjectCandidate) {
         id = UUID()
