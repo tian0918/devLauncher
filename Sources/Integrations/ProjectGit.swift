@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 struct GitCommit: Identifiable, Equatable, Sendable {
@@ -55,16 +56,72 @@ struct GitRepositoryStatus: Equatable, Sendable {
 }
 
 enum ProjectGit {
-    private static let gitExecutable = "/usr/bin/git"
+    enum DetailLevel: Sendable {
+        case summary
+        case full
+    }
 
-    static func inspect(at directory: String, commitLimit: Int = 15) -> GitRepositoryStatus? {
+    static let resolvedGitExecutable: String = {
+        let fileManager = FileManager.default
+        let candidates = [
+            "/Library/Developer/CommandLineTools/usr/bin/git",
+            "/opt/homebrew/bin/git",
+            "/usr/local/bin/git",
+            "/usr/bin/git",
+        ]
+        return candidates.first { fileManager.isExecutableFile(atPath: $0) } ?? "/usr/bin/git"
+    }()
+
+    private static let ioQueue = DispatchQueue(
+        label: "devlauncher.git",
+        qos: .utility,
+        attributes: .concurrent
+    )
+
+    static func inspectAsync(
+        at directory: String,
+        detail: DetailLevel = .full,
+        existing: GitRepositoryStatus? = nil,
+        commitLimit: Int = 15
+    ) async -> GitRepositoryStatus? {
+        await withCheckedContinuation { continuation in
+            ioQueue.async {
+                continuation.resume(returning: inspect(
+                    at: directory,
+                    detail: detail,
+                    existing: existing,
+                    commitLimit: commitLimit
+                ))
+            }
+        }
+    }
+
+    static func performAsync(_ operation: @escaping @Sendable () throws -> Void) async throws {
+        try await withCheckedThrowingContinuation { continuation in
+            ioQueue.async(qos: .userInitiated) {
+                do {
+                    try operation()
+                    continuation.resume()
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
+    static func inspect(
+        at directory: String,
+        detail: DetailLevel = .full,
+        existing: GitRepositoryStatus? = nil,
+        commitLimit: Int = 15
+    ) -> GitRepositoryStatus? {
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: directory, isDirectory: &isDirectory), isDirectory.boolValue else {
             return nil
         }
 
         guard let statusResult = try? run(
-            arguments: ["-c", "core.quotepath=false", "status", "--porcelain=v2", "--branch"],
+            arguments: ["--no-optional-locks", "-c", "core.quotepath=false", "status", "--porcelain=v2", "--branch"],
             at: directory,
             timeout: 8
         ), statusResult.exitCode == 0 else {
@@ -73,8 +130,27 @@ enum ProjectGit {
 
         let parsed = parsePorcelainV2(statusResult.stdout)
 
+        if detail == .summary {
+            let reusable = existing?.branch == parsed.branch ? existing : nil
+            let fallbackBranches = parsed.isDetached || parsed.isUnborn ? [] : [parsed.branch]
+            return GitRepositoryStatus(
+                branch: parsed.branch,
+                isDetached: parsed.isDetached,
+                isUnborn: parsed.isUnborn,
+                upstream: parsed.upstream,
+                ahead: parsed.ahead,
+                behind: parsed.behind,
+                stagedCount: parsed.stagedCount,
+                unstagedCount: parsed.unstagedCount,
+                untrackedCount: parsed.untrackedCount,
+                conflictedCount: parsed.conflictedCount,
+                branches: reusable?.branches ?? fallbackBranches,
+                recentCommits: reusable?.recentCommits ?? []
+            )
+        }
+
         let branchesResult = try? run(
-            arguments: ["for-each-ref", "--format=%(refname:short)", "refs/heads"],
+            arguments: ["--no-optional-locks", "for-each-ref", "--format=%(refname:short)", "refs/heads"],
             at: directory,
             timeout: 6
         )
@@ -96,7 +172,10 @@ enum ProjectGit {
         let recentCommits: [GitCommit]
         if !parsed.isUnborn,
            let logResult = try? run(
-               arguments: ["log", "-n", String(max(1, commitLimit)), "--format=%h%x1f%s%x1f%an%x1f%cr"],
+               arguments: [
+                   "--no-optional-locks", "log", "-n", String(max(1, commitLimit)),
+                   "--format=%h%x1f%s%x1f%an%x1f%ct%x1f%cr",
+               ],
                at: directory,
                timeout: 6
            ),
@@ -168,12 +247,13 @@ enum ProjectGit {
     static func isValidBranchName(_ raw: String) -> Bool {
         let name = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty, !name.hasPrefix("-"), !name.hasPrefix("/"), !name.hasSuffix("/"),
-              !name.hasSuffix(".lock"), !name.contains(".."), !name.contains("@{"),
-              !name.contains("//"), name != "@" else {
+              !name.hasSuffix("."), !name.hasSuffix(".lock"), !name.contains(".."),
+              !name.contains("@{"), !name.contains("//"), !name.contains("/."), name != "@" else {
             return false
         }
         let forbidden: Set<Character> = [" ", "\t", "\n", "\r", "~", "^", ":", "?", "*", "[", "\\"]
-        return !name.contains(where: { forbidden.contains($0) })
+        if name.contains(where: { forbidden.contains($0) }) { return false }
+        return !name.unicodeScalars.contains(where: { $0.value < 0x20 || $0.value == 0x7F })
     }
 
     // MARK: - Parsing
@@ -245,22 +325,38 @@ enum ProjectGit {
     }
 
     private static func parseCommits(_ output: String) -> [GitCommit] {
-        output
+        let formatter = RelativeDateTimeFormatter()
+        formatter.locale = Locale(identifier: "zh-Hans")
+        formatter.unitsStyle = .full
+        let now = Date()
+
+        return output
             .split(whereSeparator: \.isNewline)
             .compactMap { line -> GitCommit? in
                 let fields = line.split(separator: "\u{1F}", omittingEmptySubsequences: false)
-                guard fields.count == 4 else { return nil }
+                guard fields.count == 5 || fields.count == 4 else { return nil }
+                let relativeDate: String
+                if fields.count == 5, let timestamp = TimeInterval(fields[3]) {
+                    let commitDate = Date(timeIntervalSince1970: timestamp)
+                    if abs(now.timeIntervalSince(commitDate)) < 5 {
+                        relativeDate = "刚刚"
+                    } else {
+                        relativeDate = formatter.localizedString(for: commitDate, relativeTo: now)
+                    }
+                } else {
+                    relativeDate = String(fields.last ?? "")
+                }
                 return GitCommit(
                     hash: String(fields[0]),
                     subject: String(fields[1]),
                     author: String(fields[2]),
-                    relativeDate: String(fields[3])
+                    relativeDate: relativeDate
                 )
             }
     }
 
     private static func preferredRemote(at directory: String) -> String? {
-        guard let result = try? run(arguments: ["remote"], at: directory, timeout: 6),
+        guard let result = try? run(arguments: ["--no-optional-locks", "remote"], at: directory, timeout: 6),
               result.exitCode == 0 else { return nil }
         let remotes = result.stdout
             .split(whereSeparator: \.isNewline)
@@ -283,12 +379,20 @@ enum ProjectGit {
         guard FileManager.default.fileExists(atPath: directory, isDirectory: &isDirectory), isDirectory.boolValue else {
             throw GitError.unavailableDirectory
         }
-        guard FileManager.default.isExecutableFile(atPath: gitExecutable) else {
+        guard FileManager.default.isExecutableFile(atPath: resolvedGitExecutable) else {
             throw GitError.gitNotInstalled
         }
 
+        let (stdoutRead, stdoutWrite) = try makePipe()
+        var closeStdoutRead = true
+        defer { if closeStdoutRead { close(stdoutRead) } }
+
+        let (stderrRead, stderrWrite) = try makePipe()
+        var closeStderrRead = true
+        defer { if closeStderrRead { close(stderrRead) } }
+
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: gitExecutable)
+        process.executableURL = URL(fileURLWithPath: resolvedGitExecutable)
         process.arguments = arguments
         process.currentDirectoryURL = URL(fileURLWithPath: directory, isDirectory: true)
 
@@ -296,77 +400,119 @@ enum ProjectGit {
         environment["GIT_TERMINAL_PROMPT"] = "0"
         environment["GIT_EDITOR"] = "true"
         environment["GCM_INTERACTIVE"] = "never"
-        environment["LC_ALL"] = "C"
+        // Keep English diagnostics for error classification without breaking UTF-8 in Git hooks.
+        environment.removeValue(forKey: "LC_ALL")
+        environment["LC_MESSAGES"] = "C"
+        if environment["LANG"] == nil {
+            environment["LANG"] = "en_US.UTF-8"
+        }
         if environment["GIT_SSH_COMMAND"] == nil {
             environment["GIT_SSH_COMMAND"] = "ssh -o BatchMode=yes"
         }
         process.environment = environment
 
-        let stdoutPipe = Pipe()
-        let stderrPipe = Pipe()
-        process.standardOutput = stdoutPipe
-        process.standardError = stderrPipe
+        let stdoutWriteHandle = FileHandle(fileDescriptor: stdoutWrite, closeOnDealloc: false)
+        let stderrWriteHandle = FileHandle(fileDescriptor: stderrWrite, closeOnDealloc: false)
+        process.standardOutput = stdoutWriteHandle
+        process.standardError = stderrWriteHandle
         process.standardInput = FileHandle.nullDevice
 
-        final class Collector: @unchecked Sendable {
-            private let lock = NSLock()
-            private var data = Data()
-            func append(_ chunk: Data) {
-                lock.lock()
-                data.append(chunk)
-                lock.unlock()
-            }
-            func value() -> Data {
-                lock.lock()
-                defer { lock.unlock() }
-                return data
-            }
+        do {
+            try process.run()
+        } catch {
+            close(stdoutWrite)
+            close(stderrWrite)
+            throw error
         }
+        close(stdoutWrite)
+        close(stderrWrite)
 
-        let stdoutCollector = Collector()
-        let stderrCollector = Collector()
-        let group = DispatchGroup()
+        var stdoutData = Data()
+        var stderrData = Data()
+        var stdoutOpen = true
+        var stderrOpen = true
+        var buffer = [UInt8](repeating: 0, count: 8192)
+        let deadline = Date().addingTimeInterval(timeout)
+        var timedOut = false
 
-        group.enter()
-        DispatchQueue.global(qos: .userInitiated).async {
+        func drain(_ fd: Int32, into target: inout Data) -> Bool {
             while true {
-                let chunk = stdoutPipe.fileHandleForReading.availableData
-                if chunk.isEmpty { break }
-                stdoutCollector.append(chunk)
+                let count = buffer.withUnsafeMutableBytes { read(fd, $0.baseAddress, $0.count) }
+                if count > 0 {
+                    target.append(contentsOf: buffer.prefix(count))
+                } else if count == 0 {
+                    return false
+                } else if errno == EAGAIN || errno == EWOULDBLOCK {
+                    return true
+                } else if errno != EINTR {
+                    return false
+                }
             }
-            group.leave()
         }
 
-        group.enter()
-        DispatchQueue.global(qos: .userInitiated).async {
-            while true {
-                let chunk = stderrPipe.fileHandleForReading.availableData
-                if chunk.isEmpty { break }
-                stderrCollector.append(chunk)
+        while stdoutOpen || stderrOpen {
+            let remaining = deadline.timeIntervalSinceNow
+            if remaining <= 0 {
+                timedOut = true
+                break
             }
-            group.leave()
+            var fds: [pollfd] = []
+            if stdoutOpen { fds.append(pollfd(fd: stdoutRead, events: Int16(POLLIN), revents: 0)) }
+            if stderrOpen { fds.append(pollfd(fd: stderrRead, events: Int16(POLLIN), revents: 0)) }
+            let waitMs = Int32(min(max(1, Int(ceil(remaining * 1000))), 250))
+            let ready = poll(&fds, nfds_t(fds.count), waitMs)
+            if ready < 0 && errno != EINTR { break }
+            if stdoutOpen { stdoutOpen = drain(stdoutRead, into: &stdoutData) }
+            if stderrOpen { stderrOpen = drain(stderrRead, into: &stderrData) }
         }
 
-        try process.run()
+        if !timedOut && process.isRunning {
+            let remaining = deadline.timeIntervalSinceNow
+            let end = Date().addingTimeInterval(max(0, remaining))
+            while process.isRunning && Date() < end {
+                usleep(10_000)
+            }
+            if process.isRunning {
+                timedOut = true
+            }
+        }
 
-        let finished = DispatchSemaphore(value: 0)
-        process.terminationHandler = { _ in finished.signal() }
-
-        let timedOut = finished.wait(timeout: .now() + timeout) == .timedOut
         if timedOut {
             process.terminate()
-            _ = finished.wait(timeout: .now() + 2)
+            let killEnd = Date().addingTimeInterval(2)
+            while process.isRunning && Date() < killEnd {
+                usleep(20_000)
+            }
             if process.isRunning {
                 kill(process.processIdentifier, SIGKILL)
             }
-            group.wait()
+            process.waitUntilExit()
             throw GitError.timedOut
         }
 
-        group.wait()
-        let stdout = String(decoding: stdoutCollector.value(), as: UTF8.self)
-        let stderr = String(decoding: stderrCollector.value(), as: UTF8.self)
+        process.waitUntilExit()
+        close(stdoutRead)
+        closeStdoutRead = false
+        close(stderrRead)
+        closeStderrRead = false
+
+        let stdout = String(decoding: stdoutData, as: UTF8.self)
+        let stderr = String(decoding: stderrData, as: UTF8.self)
         return CommandResult(exitCode: process.terminationStatus, stdout: stdout, stderr: stderr)
+    }
+
+    private static func makePipe() throws -> (Int32, Int32) {
+        var fds = [Int32](repeating: -1, count: 2)
+        guard pipe(&fds) == 0 else { throw SpawnFailure.system(errno) }
+        if fcntl(fds[0], F_SETFL, O_NONBLOCK) != 0
+            || fcntl(fds[0], F_SETFD, FD_CLOEXEC) != 0
+            || fcntl(fds[1], F_SETFD, FD_CLOEXEC) != 0 {
+            let err = errno
+            close(fds[0])
+            close(fds[1])
+            throw SpawnFailure.system(err)
+        }
+        return (fds[0], fds[1])
     }
 
     private static func ensureSuccess(_ result: CommandResult, action: String) throws {
@@ -398,7 +544,7 @@ private enum GitError: LocalizedError {
         case .unavailableDirectory:
             return "项目目录不可用。请连接磁盘或重新定位项目。"
         case .gitNotInstalled:
-            return "未检测到系统 Git（/usr/bin/git）。"
+            return "未检测到可用的系统 Git。"
         case .invalidBranchName(let name):
             return "无效的分支名称「\(name)」。"
         case .timedOut:

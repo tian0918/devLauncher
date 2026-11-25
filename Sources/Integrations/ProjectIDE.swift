@@ -9,10 +9,18 @@ struct ProjectIDE: Identifiable, Hashable, Sendable {
     var id: String { applicationURL.standardizedFileURL.path }
 
     @MainActor
+    private static var menuIconCache: [String: NSImage] = [:]
+
+    @MainActor
     var menuIcon: NSImage {
+        let key = id
+        if let cached = Self.menuIconCache[key] {
+            return cached
+        }
         let icon = NSWorkspace.shared.icon(forFile: applicationURL.path)
         let resized = (icon.copy() as? NSImage) ?? icon
         resized.size = NSSize(width: 16, height: 16)
+        Self.menuIconCache[key] = resized
         return resized
     }
 

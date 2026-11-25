@@ -225,27 +225,37 @@ enum ProjectTerminal: String, CaseIterable, Sendable {
     }
 
     static func directoryCommand(at directory: String) throws -> String {
-        "cd -- \(try quotedDirectory(directory))"
+        "cd -- \(try quotedShellString(directory, error: .unsupportedDirectory))"
     }
 
     static func launchCommand(for cli: ProjectAICLI, at directory: String) throws -> String {
-        try launchCommand(executable: cli.command, at: directory)
+        try validateCommandName(cli.command)
+        let dirCmd = try directoryCommand(at: directory)
+        guard !cli.executablePath.isEmpty else {
+            return "\(dirCmd) && \(cli.command)"
+        }
+        let fallbackPath = try quotedShellString(cli.executablePath, error: .unsupportedCommand(cli.executablePath))
+        return "\(dirCmd) && if command -v \(cli.command) >/dev/null 2>&1; then \(cli.command); else \(fallbackPath); fi"
     }
 
     static func launchCommand(executable: String, at directory: String) throws -> String {
+        try validateCommandName(executable)
+        return "\(try directoryCommand(at: directory)) && \(executable)"
+    }
+
+    private static func validateCommandName(_ executable: String) throws {
         guard !executable.isEmpty,
               executable.range(of: #"^[A-Za-z0-9._-]+$"#, options: .regularExpression) != nil else {
             throw TerminalLaunchError.unsupportedCommand(executable)
         }
-        return "\(try directoryCommand(at: directory)) && \(executable)"
     }
 
-    private static func quotedDirectory(_ directory: String) throws -> String {
+    private static func quotedShellString(_ value: String, error: TerminalLaunchError) throws -> String {
         // Keep control characters out of text sent to the interactive terminal.
-        guard !directory.unicodeScalars.contains(where: { $0.value < 0x20 || (0x7f...0x9f).contains($0.value) }) else {
-            throw TerminalLaunchError.unsupportedDirectory
+        guard !value.unicodeScalars.contains(where: { $0.value < 0x20 || (0x7f...0x9f).contains($0.value) }) else {
+            throw error
         }
-        return "'" + directory.replacingOccurrences(of: "'", with: "'\\''") + "'"
+        return "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
     private static func run(script: String, command: String, terminal: String, target: String?) throws {

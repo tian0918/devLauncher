@@ -1,6 +1,10 @@
 import Foundation
 
 struct NVMInstallation: Equatable, Sendable {
+    private static let versionRegex = try! NSRegularExpression(
+        pattern: #"^v[0-9]+\.[0-9]+\.[0-9]+([-.][A-Za-z0-9.-]+)?$"#
+    )
+
     let script: String
     let directory: String
 
@@ -12,8 +16,8 @@ struct NVMInstallation: Equatable, Sendable {
             let folders = (try? fileManager.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)) ?? []
             return folders.compactMap { folder -> String? in
                 let version = folder.lastPathComponent
-                guard version.range(of: #"^v[0-9]+\.[0-9]+\.[0-9]+([-.][A-Za-z0-9.-]+)?$"#,
-                                    options: .regularExpression) != nil,
+                let range = NSRange(version.startIndex..., in: version)
+                guard Self.versionRegex.firstMatch(in: version, range: range) != nil,
                       fileManager.isExecutableFile(atPath: folder.appendingPathComponent("bin/node").path)
                 else { return nil }
                 return version
@@ -106,9 +110,11 @@ enum NVM {
         return NVMInstallation(script: script, directory: directory)
     }
 
+    private static let selectorRegex = try! NSRegularExpression(pattern: #"^[A-Za-z0-9_.*+/-]+$"#)
+
     static func validSelector(_ selector: String) -> Bool {
-        !selector.hasPrefix("-") &&
-            selector.range(of: #"^[A-Za-z0-9_.*+/-]+$"#, options: .regularExpression) != nil
+        guard !selector.hasPrefix("-") else { return false }
+        return selectorRegex.firstMatch(in: selector, range: NSRange(selector.startIndex..., in: selector)) != nil
     }
 
     enum Operation: String {
@@ -204,11 +210,16 @@ enum NVM {
     fi
     printf '\n%s\tNODE\t%s\n' "$5" "$node_version"
     if [[ "$6" == installDependencies ]]; then
-      if ! command -v npm >/dev/null; then
-        printf '%s\n' '找不到 npm。'
+      pkg_mgr="${4%% *}"
+      case "$pkg_mgr" in
+        npm|pnpm|yarn|bun) ;;
+        *) pkg_mgr=npm ;;
+      esac
+      if ! command -v "$pkg_mgr" >/dev/null; then
+        printf '找不到 %s。\n' "$pkg_mgr"
         exit 127
       fi
-      exec npm install
+      exec "$pkg_mgr" install
     fi
     exec /bin/zsh -fc "$4"
     """#

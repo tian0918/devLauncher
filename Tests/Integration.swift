@@ -18,21 +18,26 @@ struct Integration {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
+        try verifyRunOutputIncrementalAndRetention()
         try verifyTerminalAndAICLI(from: root)
         try verifyLaunchPortCommandAdaptation(at: root)
+        try verifyPackageManagerAndScanRules(at: root)
         try await verifyIDECommands(from: root)
         try verifyGitSupport(from: root)
         try await verifyPythonLaunch(at: root)
+        try await verifyURLDetectionAndPinning(at: root)
 
-        let homeProjects = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Desktop/txby项目")
-        if FileManager.default.fileExists(atPath: homeProjects.path) {
-            let realResult = ProjectFiles.scan([homeProjects]) { false }
-            try expect(!realResult.candidates.isEmpty, "Local project scan found no manifests")
-            if let node = realResult.candidates.first(where: { $0.kind == .node }) {
-                let selected = URL(fileURLWithPath: node.path).appendingPathComponent("package.json")
-                try expect(ProjectFiles.scan([selected]) { false }.candidates.count == 1, "Single-file import failed")
+        if let customScanDir = ProcessInfo.processInfo.environment["DEVLAUNCHER_SCAN_DIR"] {
+            let customURL = URL(fileURLWithPath: customScanDir)
+            if FileManager.default.fileExists(atPath: customURL.path) {
+                let realResult = ProjectFiles.scan([customURL]) { false }
+                try expect(!realResult.candidates.isEmpty, "Custom project scan found no manifests")
+                if let node = realResult.candidates.first(where: { $0.kind == .node }) {
+                    let selected = URL(fileURLWithPath: node.path).appendingPathComponent("package.json")
+                    try expect(ProjectFiles.scan([selected]) { false }.candidates.count == 1, "Single-file import failed")
+                }
+                print("Scanned \(realResult.candidates.count) projects from DEVLAUNCHER_SCAN_DIR")
             }
-            print("Scanned \(realResult.candidates.count) local projects without running them")
         }
 
         let fixture = root.appendingPathComponent("项目 with spaces")
@@ -64,11 +69,15 @@ struct Integration {
         try await until("nvm detection") { !model.detecting }
         if let expectedNVM = ProcessInfo.processInfo.environment["DEVLAUNCHER_EXPECT_NVM"] {
             try expect(model.installation?.directory == expectedNVM, "nvm detection selected \(model.installation?.directory ?? "none")")
+        } else if model.installation == nil || model.versions.count < 2 {
+            if let hermeticScript = try provisionHermeticNVM(at: root) {
+                model.setNVMScript(hermeticScript.path)
+            }
         }
         guard let installation = model.installation, model.versions.count >= 2 else {
-            throw CheckFailure(message: "Integration requires an nvm installation with at least two Node versions")
+            throw CheckFailure(message: "Integration requires an nvm installation with at least two Node versions (or node/npm in PATH)")
         }
-        print("Detected nvm at \(installation.directory)")
+        print("Using nvm at \(installation.directory) with versions \(model.versions.joined(separator: ", "))")
 
         let explicitVersion = model.versions[0]
         let explicitSelector = String(explicitVersion.dropFirst().prefix(while: { $0.isNumber }))
@@ -193,18 +202,246 @@ struct Integration {
         try expect(!model.terminate { replied = true }, "Quit did not wait for active process")
         try await until("quit cleanup") { replied && model.runState(second.id).phase == .stopped }
 
+        try expect(replied && model.runState(second.id).phase == .stopped, "Quit cleanup state mismatch")
+        print("Core integration checks passed. Loopback port checks: \(port == nil ? "unavailable in this session" : "passed").")
+    }
+
+    static func verifyRunOutputIncrementalAndRetention() throws {
         let token = "startup-token"
         let log = RunOutput(token: token)
         log.append(Data("\(token)\tNO".utf8))
         log.append(Data("DE\tv22\n\u{001B}[31m标准输出\u{001B}[0m".utf8))
-        try expect(log.snapshot()?.log == "Node v22\n标准输出", "Partial marker, UTF-8, or ANSI handling failed")
+        guard let firstSnap = log.snapshot() else {
+            throw CheckFailure(message: "Missing initial RunOutput snapshot")
+        }
+        try expect(firstSnap.log == "Node v22\n标准输出", "Partial marker, UTF-8, or ANSI handling failed")
+
+        // Verify split multi-byte UTF-8 and split CSI/OSC escape sequences across chunks.
+        let splitUTF8 = Array("中文".utf8) // 6 bytes
+        log.append(Data(["\u{001B}".utf8.first!, UInt8(ascii: "[")]))
+        log.append(Data("32m".utf8) + Data(splitUTF8.prefix(2)))
+        log.append(Data(splitUTF8.dropFirst(2)) + Data("\u{001B}]0;title".utf8))
+        log.append(Data("\u{0007}".utf8))
+        try expect(log.snapshot()?.log == "Node v22\n标准输出中文", "Split UTF-8 or split ANSI CSI/OSC across chunks failed")
+
+        let beforeCap = log.snapshot() ?? firstSnap
         log.append(Data(repeating: 97, count: 1_100_000))
-        try expect(log.snapshot()?.log.utf8.count == 1_048_576, "Log retention exceeded its bound")
-        print("Core integration checks passed. Loopback port checks: \(port == nil ? "unavailable in this session" : "passed").")
+        guard let capped = log.snapshot() else {
+            throw CheckFailure(message: "Missing capped RunOutput snapshot")
+        }
+        try expect(capped.log.utf8.count == 1_048_576, "Log retention exceeded its bound")
+        try expect(capped.snapshot.droppedUTF16 > 0 && capped.snapshot.generation == beforeCap.snapshot.generation,
+                   "Incremental droppedUTF16 tracking did not record front truncation")
+        print("RunOutput incremental ANSI/UTF-8 and 1MB retention checks passed")
+    }
+
+    @MainActor
+    static func verifyURLDetectionAndPinning(at root: URL) async throws {
+        // 1. Unit checks for live URL extraction & wildcard normalization across split chunks.
+        let token = "url-token"
+        let out = RunOutput(token: token, precedingLog: "Old log http://localhost:9999/\n")
+        out.append(Data("\(token)\tRUNTIME\tPython 3.12\n".utf8))
+        out.append(Data("Docs: https://vitejs.dev/guide/\n  ➜  Local:   \u{001B}[36mhttp://0.0.0.0:51".utf8))
+        out.append(Data("74/dashboard\u{001B}[0m, ready!\nGET http://localhost:5174/api/ping\n".utf8))
+        let snap = out.snapshot()
+        try expect(snap?.detectedURL?.absoluteString == "http://localhost:5174/dashboard",
+                   "Expected normalized first local URL, got \(String(describing: snap?.detectedURL))")
+
+        // 2. End-to-end pinning sort order, batch launch, and live browserURL without configured launchPort.
+        let workspace = root.appendingPathComponent("pin-and-url", isDirectory: true)
+        let svcA = workspace.appendingPathComponent("alpha-svc", isDirectory: true)
+        let svcB = workspace.appendingPathComponent("beta-svc", isDirectory: true)
+        let svcC = workspace.appendingPathComponent("gamma-svc", isDirectory: true)
+        for dir in [svcA, svcB, svcC] {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        }
+        try write("import time\nprint('Listening on http://127.0.0.1:43123/app', flush=True)\ntime.sleep(20)\n",
+                  to: svcB.appendingPathComponent("main.py"))
+        try write("import time\nprint('Listening on http://0.0.0.0:43124/', flush=True)\ntime.sleep(20)\n",
+                  to: svcC.appendingPathComponent("main.py"))
+        try write("print('idle')\n", to: svcA.appendingPathComponent("main.py"))
+
+        let scanned = ProjectFiles.scan([svcA, svcB, svcC]) { false }
+        let stateFile = StateFile(url: root.appendingPathComponent("pin-state/projects.json"))
+        let model = LauncherModel(stateFile: stateFile)
+        try expect(model.add(scanned.candidates), "Could not import pin-and-url fixtures")
+        try expect(model.projects.map(\.name) == ["alpha-svc", "beta-svc", "gamma-svc"], "Initial sort differed")
+
+        let beta = model.projects.first { $0.name == "beta-svc" }!
+        let gamma = model.projects.first { $0.name == "gamma-svc" }!
+        defer { model.stopAll() }
+
+        try expect(model.togglePinned(gamma.id) && model.setPinned(true, for: beta.id), "Pinning failed")
+        try expect(model.projects.map(\.name) == ["beta-svc", "gamma-svc", "alpha-svc"],
+                   "Pinned projects did not sort ahead of unpinned projects: \(model.projects.map(\.name))")
+
+        // Updating launch config must preserve pinned state.
+        var editedBeta = model.project(for: beta.id)!
+        editedBeta.listAlias = "后端 API"
+        try expect(model.setListAlias("后端 API", for: beta.id) && model.update(editedBeta), "Updating pinned project failed")
+        try expect(model.project(for: beta.id)?.pinned == true, "Update cleared isPinned flag")
+        let reloaded = try stateFile.load()
+        try expect(reloaded.projects.filter(\.pinned).count == 2, "Pinned flags did not persist to disk")
+
+        // Batch start pinned projects & verify automatic URL detection without launchPort.
+        model.startPinnedProjects()
+        try await until("batch start pinned & detect live URLs", seconds: 10) {
+            model.browserURL(for: beta)?.absoluteString == "http://127.0.0.1:43123/app" &&
+                model.browserURL(for: gamma)?.absoluteString == "http://localhost:43124/" &&
+                model.effectivePort(for: beta) == 43123 &&
+                model.runPhase(model.projects.last!.id) == .idle
+        }
+
+        model.stopAll()
+        try await until("stopAll clears detectedURL") {
+            model.runPhase(beta.id) == .stopped &&
+                model.runPhase(gamma.id) == .stopped &&
+                model.browserURL(for: beta) == nil
+        }
+        print("Live log URL detection, pinning sort, and batch pinned launch checks passed")
+    }
+
+    static func verifyPackageManagerAndScanRules(at root: URL) throws {
+        let workspace = root.appendingPathComponent("pkg-mgr-fixture", isDirectory: true)
+        let pnpmDir = workspace.appendingPathComponent("pnpm-app", isDirectory: true)
+        let yarnDir = workspace.appendingPathComponent("yarn-app", isDirectory: true)
+        let bunDir = workspace.appendingPathComponent("bun-app", isDirectory: true)
+        let podsDir = workspace.appendingPathComponent("Pods/SomePod", isDirectory: true)
+        let targetDir = workspace.appendingPathComponent("target/pkg", isDirectory: true)
+        for dir in [pnpmDir, yarnDir, bunDir, podsDir, targetDir] {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        }
+        try write(#"{"name":"pnpm-app","scripts":{"dev":"vite"}}"#, to: pnpmDir.appendingPathComponent("package.json"))
+        try write("lockfileVersion: '9.0'\n", to: pnpmDir.appendingPathComponent("pnpm-lock.yaml"))
+        try write(#"{"name":"yarn-app","scripts":{"dev":"vite"}}"#, to: yarnDir.appendingPathComponent("package.json"))
+        try write("# yarn lockfile v1\n", to: yarnDir.appendingPathComponent("yarn.lock"))
+        try write(#"{"name":"bun-app","packageManager":"bun@1.2.0","scripts":{"dev":"vite"}}"#, to: bunDir.appendingPathComponent("package.json"))
+        try write(#"{"name":"ignored-pod","scripts":{"dev":"vite"}}"#, to: podsDir.appendingPathComponent("package.json"))
+        try write(#"{"name":"ignored-target","scripts":{"dev":"vite"}}"#, to: targetDir.appendingPathComponent("package.json"))
+
+        let scanned = ProjectFiles.scan([workspace]) { false }
+        try expect(scanned.candidates.map(\.name) == ["bun-app", "pnpm-app", "yarn-app"],
+                   "Pods/target were not ignored or candidates differed: \(scanned.candidates.map(\.name))")
+        let commands = Dictionary(uniqueKeysWithValues: scanned.candidates.map { ($0.name, $0.suggestedCommand) })
+        try expect(commands["pnpm-app"] == "pnpm run dev" && commands["yarn-app"] == "yarn dev" && commands["bun-app"] == "bun run dev",
+                   "Package manager suggested commands differed: \(commands)")
+        try expect(ProjectFiles.detectPackageManager(at: pnpmDir.path) == .pnpm &&
+                   ProjectFiles.detectPackageManager(at: yarnDir.path) == .yarn &&
+                   ProjectFiles.detectPackageManager(at: bunDir.path) == .bun,
+                   "Package manager detection failed")
+
+        var bunProj = Project(candidate: scanned.candidates.first { $0.name == "bun-app" }!)
+        bunProj.command = "bun dev"
+        bunProj.launchPort = 5199
+        try expect(ProjectFiles.launchCommand(for: bunProj) == "bun dev --port 5199 --strictPort",
+                   "bun dev shorthand did not inject Vite port flags")
+        print("Package manager auto-detection and scan ignore checks passed")
     }
 
     static func expect(_ value: @autoclosure () -> Bool, _ message: String) throws {
         guard value() else { throw CheckFailure(message: message) }
+    }
+
+    private static func findBinary(_ name: String) -> String? {
+        let env = ManagedProcess.environment()
+        let paths = (env["PATH"] ?? "").split(separator: ":").map(String.init)
+        for dir in paths {
+            let candidate = URL(fileURLWithPath: dir).appendingPathComponent(name).path
+            if FileManager.default.isExecutableFile(atPath: candidate) {
+                return candidate
+            }
+        }
+        return nil
+    }
+
+    private static func provisionHermeticNVM(at root: URL) throws -> URL? {
+        guard let realNode = findBinary("node"), let realNPM = findBinary("npm") else {
+            return nil
+        }
+        let nvmRoot = root.appendingPathComponent("hermetic-nvm", isDirectory: true)
+        let preload = nvmRoot.appendingPathComponent("preload.cjs")
+        try FileManager.default.createDirectory(at: nvmRoot, withIntermediateDirectories: true)
+        try write("""
+        if (process.env.DEVLAUNCHER_MOCK_NODE_VER) {
+          Object.defineProperty(process, 'version', {
+            value: process.env.DEVLAUNCHER_MOCK_NODE_VER,
+            configurable: true
+          });
+        }
+        """, to: preload)
+
+        for ver in ["v22.99.0", "v20.99.0"] {
+            let binDir = nvmRoot.appendingPathComponent("versions/node/\(ver)/bin", isDirectory: true)
+            try FileManager.default.createDirectory(at: binDir, withIntermediateDirectories: true)
+            let nodeShim = binDir.appendingPathComponent("node")
+            try write("""
+            #!/bin/sh
+            if [ "$#" -eq 1 ] && { [ "$1" = "--version" ] || [ "$1" = "-v" ]; }; then
+              printf '%s\\n' '\(ver)'
+              exit 0
+            fi
+            export DEVLAUNCHER_MOCK_NODE_VER='\(ver)'
+            exec '\(realNode)' --require '\(preload.path)' "$@"
+            """, to: nodeShim)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: nodeShim.path)
+
+            let npmShim = binDir.appendingPathComponent("npm")
+            try write("""
+            #!/bin/sh
+            exec '\(realNPM)' "$@"
+            """, to: npmShim)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: npmShim.path)
+        }
+
+        let script = nvmRoot.appendingPathComponent("nvm.sh")
+        try write(#"""
+        nvm_find_nvmrc() {
+          local dir="$PWD"
+          while [[ -n "$dir" ]]; do
+            if [[ -f "$dir/.nvmrc" ]]; then
+              printf '%s\n' "$dir/.nvmrc"
+              return 0
+            fi
+            [[ "$dir" == "/" ]] && break
+            dir="${dir:h}"
+          done
+          return 1
+        }
+        nvm_alias() {
+          [[ "$1" == "default" ]] && printf 'v22.99.0\n' && return 0
+          return 1
+        }
+        nvm() {
+          local cmd="$1"
+          shift || true
+          if [[ "$cmd" == "use" ]]; then
+            local req="${1-}"
+            if [[ -z "$req" ]]; then
+              local rc
+              rc="$(nvm_find_nvmrc)" || return 3
+              req="$(sed 's/#.*//; s/^[[:space:]]*//; s/[[:space:]]*$//' "$rc" | grep -v '^$' | head -n 1)"
+            fi
+            [[ "$req" == "default" ]] && req="v22.99.0"
+            local matched=""
+            for d in "$NVM_DIR"/versions/node/v*; do
+              [[ -d "$d" ]] || continue
+              local base="${d:t}"
+              if [[ "$base" == "$req" || "$base" == "v${req}."* || "$base" == "${req}."* ]]; then
+                matched="$d"
+                break
+              fi
+            done
+            if [[ -z "$matched" || ! -x "$matched/bin/node" ]]; then
+              printf 'N/A: version "%s" is not yet installed.\n' "$req" >&2
+              return 3
+            fi
+            export PATH="$matched/bin:$PATH"
+            return 0
+          fi
+          return 1
+        }
+        """#, to: script)
+        return script
     }
 
     @MainActor
@@ -608,6 +845,23 @@ struct Integration {
         try expect(cliShell.terminationStatus == 0 && String(decoding: cliResult, as: UTF8.self) == canonicalDirectory,
                    "AI CLI command did not enter the exact project directory")
 
+        // Verify fallback to discovered executablePath when the binary directory is NOT in PATH.
+        let fallbackBinary = binDir.appendingPathComponent("codex")
+        try write("#!/bin/sh\nprintf 'FALLBACK:%s' \"$PWD\"\n", to: fallbackBinary)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fallbackBinary.path)
+        let fallbackShell = Process()
+        fallbackShell.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        fallbackShell.environment = ["PATH": "/usr/bin:/bin"]
+        fallbackShell.arguments = ["-fc", cliCommand]
+        let fallbackOutput = Pipe()
+        fallbackShell.standardOutput = fallbackOutput
+        try fallbackShell.run()
+        let fallbackResult = fallbackOutput.fileHandleForReading.readDataToEndOfFile()
+        fallbackShell.waitUntilExit()
+        try expect(fallbackShell.terminationStatus == 0 &&
+                   String(decoding: fallbackResult, as: UTF8.self) == "FALLBACK:\(canonicalDirectory)",
+                   "AI CLI command did not fall back to executablePath when missing from PATH")
+
         let localCLIs = ProjectAICLI.discover()
         print("Terminal & AI CLI checks passed. Local installed AI CLIs: \(localCLIs.map(\.name).joined(separator: ", "))")
     }
@@ -625,7 +879,7 @@ struct Integration {
 
         func git(_ args: [String], in dir: URL) throws {
             let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+            process.executableURL = URL(fileURLWithPath: ProjectGit.resolvedGitExecutable)
             process.arguments = args
             process.currentDirectoryURL = dir
             process.standardOutput = FileHandle.nullDevice
@@ -684,6 +938,11 @@ struct Integration {
         let pulled = ProjectGit.inspect(at: repo.path)
         try expect(pulled?.behind == 0 && pulled?.recentCommits.first?.subject == "Remote update",
                    "Pull did not bring in remote commit")
+        let summaryOnly = ProjectGit.inspect(at: repo.path, detail: .summary, existing: pulled)
+        try expect(summaryOnly?.branch == "main" && summaryOnly?.recentCommits.first?.subject == "Remote update",
+                   "Git summary inspection did not preserve cached commit details on matching branch")
+        try expect(!FileManager.default.fileExists(atPath: repo.appendingPathComponent(".git/index.lock").path),
+                   "Git inspection left an index.lock behind")
         print("Git L1 support checks passed")
     }
 

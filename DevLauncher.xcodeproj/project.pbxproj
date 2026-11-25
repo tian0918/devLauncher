@@ -7,37 +7,65 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		A000000000000000000000C8 /* ConfigurationViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000064 /* ConfigurationViews.swift */; };
-		A000000000000000000000C9 /* DevLauncherApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000065 /* DevLauncherApp.swift */; };
-		A000000000000000000000CA /* LauncherModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000066 /* LauncherModel.swift */; };
-		A000000000000000000000CB /* MainView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000067 /* MainView.swift */; };
-		A000000000000000000000CC /* ManagedProcess.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000068 /* ManagedProcess.swift */; };
-		A000000000000000000000CD /* NVM.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000069 /* NVM.swift */; };
-		A000000000000000000000CE /* Projects.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000006A /* Projects.swift */; };
-		A000000000000000000000CF /* RunOutput.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000006B /* RunOutput.swift */; };
-		A000000000000000000000D0 /* ProjectTerminal.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000006C /* ProjectTerminal.swift */; };
-		A000000000000000000000D1 /* ProcessSupervisor.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000006D /* ProcessSupervisor.swift */; };
-		A000000000000000000000D2 /* TCPPortStatus.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000006E /* TCPPortStatus.swift */; };
-		A000000000000000000000D3 /* ProjectIDE.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000006F /* ProjectIDE.swift */; };
 		A000000000000000000000F3 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A000000000000000000000F1 /* Assets.xcassets */; };
+		A00000000000000000000101 /* DevLauncherApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000201 /* DevLauncherApp.swift */; };
+		A00000000000000000000102 /* LauncherMenuCommands.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000202 /* LauncherMenuCommands.swift */; };
+		A00000000000000000000103 /* Project.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000203 /* Project.swift */; };
+		A00000000000000000000104 /* ProjectFiles.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000204 /* ProjectFiles.swift */; };
+		A00000000000000000000105 /* LauncherModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000205 /* LauncherModel.swift */; };
+		A00000000000000000000106 /* ManagedProcess.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000206 /* ManagedProcess.swift */; };
+		A00000000000000000000107 /* ProcessSupervisor.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000207 /* ProcessSupervisor.swift */; };
+		A00000000000000000000108 /* RunOutput.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000208 /* RunOutput.swift */; };
+		A00000000000000000000109 /* NVM.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000209 /* NVM.swift */; };
+		A0000000000000000000010A /* TCPPortStatus.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000020A /* TCPPortStatus.swift */; };
+		A0000000000000000000010B /* ProjectGit.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000020B /* ProjectGit.swift */; };
+		A0000000000000000000010C /* ProjectIDE.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000020C /* ProjectIDE.swift */; };
+		A0000000000000000000010D /* ProjectTerminal.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000020D /* ProjectTerminal.swift */; };
+		A0000000000000000000010E /* MainView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000020E /* MainView.swift */; };
+		A0000000000000000000010F /* LauncherPalette.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000020F /* LauncherPalette.swift */; };
+		A00000000000000000000110 /* SharedControls.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000210 /* SharedControls.swift */; };
+		A00000000000000000000111 /* ProjectSidebarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000211 /* ProjectSidebarView.swift */; };
+		A00000000000000000000112 /* ProjectRowView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000212 /* ProjectRowView.swift */; };
+		A00000000000000000000113 /* ProjectDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000213 /* ProjectDetailView.swift */; };
+		A00000000000000000000114 /* GitToolbarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000214 /* GitToolbarView.swift */; };
+		A00000000000000000000115 /* ConsoleView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000215 /* ConsoleView.swift */; };
+		A00000000000000000000116 /* ImportSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000216 /* ImportSheet.swift */; };
+		A00000000000000000000117 /* ProjectEditorSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000217 /* ProjectEditorSheet.swift */; };
+		A00000000000000000000118 /* GitSheets.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000218 /* GitSheets.swift */; };
+		A00000000000000000000119 /* NVMSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000219 /* NVMSettingsView.swift */; };
+		A0000000000000000000011A /* MenuBarPopoverView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000021A /* MenuBarPopoverView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		A00000000000000000000005 /* Dev Launcher.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Dev Launcher.app"; sourceTree = BUILT_PRODUCTS_DIR; };
-		A00000000000000000000064 /* ConfigurationViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConfigurationViews.swift; sourceTree = "<group>"; };
-		A00000000000000000000065 /* DevLauncherApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevLauncherApp.swift; sourceTree = "<group>"; };
-		A00000000000000000000066 /* LauncherModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherModel.swift; sourceTree = "<group>"; };
-		A00000000000000000000067 /* MainView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainView.swift; sourceTree = "<group>"; };
-		A00000000000000000000068 /* ManagedProcess.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManagedProcess.swift; sourceTree = "<group>"; };
-		A00000000000000000000069 /* NVM.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NVM.swift; sourceTree = "<group>"; };
-		A0000000000000000000006A /* Projects.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Projects.swift; sourceTree = "<group>"; };
-		A0000000000000000000006B /* RunOutput.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RunOutput.swift; sourceTree = "<group>"; };
-		A0000000000000000000006C /* ProjectTerminal.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectTerminal.swift; sourceTree = "<group>"; };
-		A0000000000000000000006D /* ProcessSupervisor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProcessSupervisor.swift; sourceTree = "<group>"; };
-		A0000000000000000000006E /* TCPPortStatus.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TCPPortStatus.swift; sourceTree = "<group>"; };
-		A0000000000000000000006F /* ProjectIDE.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectIDE.swift; sourceTree = "<group>"; };
 		A000000000000000000000F1 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		A000000000000000000000F4 /* DevLauncher.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = DevLauncher.entitlements; sourceTree = "<group>"; };
+		A00000000000000000000201 /* DevLauncherApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevLauncherApp.swift; sourceTree = "<group>"; };
+		A00000000000000000000202 /* LauncherMenuCommands.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherMenuCommands.swift; sourceTree = "<group>"; };
+		A00000000000000000000203 /* Project.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Project.swift; sourceTree = "<group>"; };
+		A00000000000000000000204 /* ProjectFiles.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectFiles.swift; sourceTree = "<group>"; };
+		A00000000000000000000205 /* LauncherModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherModel.swift; sourceTree = "<group>"; };
+		A00000000000000000000206 /* ManagedProcess.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManagedProcess.swift; sourceTree = "<group>"; };
+		A00000000000000000000207 /* ProcessSupervisor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProcessSupervisor.swift; sourceTree = "<group>"; };
+		A00000000000000000000208 /* RunOutput.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RunOutput.swift; sourceTree = "<group>"; };
+		A00000000000000000000209 /* NVM.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NVM.swift; sourceTree = "<group>"; };
+		A0000000000000000000020A /* TCPPortStatus.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TCPPortStatus.swift; sourceTree = "<group>"; };
+		A0000000000000000000020B /* ProjectGit.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectGit.swift; sourceTree = "<group>"; };
+		A0000000000000000000020C /* ProjectIDE.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectIDE.swift; sourceTree = "<group>"; };
+		A0000000000000000000020D /* ProjectTerminal.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectTerminal.swift; sourceTree = "<group>"; };
+		A0000000000000000000020E /* MainView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainView.swift; sourceTree = "<group>"; };
+		A0000000000000000000020F /* LauncherPalette.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherPalette.swift; sourceTree = "<group>"; };
+		A00000000000000000000210 /* SharedControls.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedControls.swift; sourceTree = "<group>"; };
+		A00000000000000000000211 /* ProjectSidebarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectSidebarView.swift; sourceTree = "<group>"; };
+		A00000000000000000000212 /* ProjectRowView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectRowView.swift; sourceTree = "<group>"; };
+		A00000000000000000000213 /* ProjectDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectDetailView.swift; sourceTree = "<group>"; };
+		A00000000000000000000214 /* GitToolbarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitToolbarView.swift; sourceTree = "<group>"; };
+		A00000000000000000000215 /* ConsoleView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConsoleView.swift; sourceTree = "<group>"; };
+		A00000000000000000000216 /* ImportSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImportSheet.swift; sourceTree = "<group>"; };
+		A00000000000000000000217 /* ProjectEditorSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectEditorSheet.swift; sourceTree = "<group>"; };
+		A00000000000000000000218 /* GitSheets.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitSheets.swift; sourceTree = "<group>"; };
+		A00000000000000000000219 /* NVMSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NVMSettingsView.swift; sourceTree = "<group>"; };
+		A0000000000000000000021A /* MenuBarPopoverView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarPopoverView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -71,20 +99,122 @@
 		A00000000000000000000006 /* Sources */ = {
 			isa = PBXGroup;
 			children = (
-				A00000000000000000000064 /* ConfigurationViews.swift */,
-				A00000000000000000000065 /* DevLauncherApp.swift */,
-				A00000000000000000000066 /* LauncherModel.swift */,
-				A00000000000000000000067 /* MainView.swift */,
-				A00000000000000000000068 /* ManagedProcess.swift */,
-				A00000000000000000000069 /* NVM.swift */,
-				A0000000000000000000006A /* Projects.swift */,
-				A0000000000000000000006B /* RunOutput.swift */,
-				A0000000000000000000006C /* ProjectTerminal.swift */,
-				A0000000000000000000006D /* ProcessSupervisor.swift */,
-				A0000000000000000000006E /* TCPPortStatus.swift */,
-				A0000000000000000000006F /* ProjectIDE.swift */,
+				A00000000000000000000301 /* App */,
+				A00000000000000000000302 /* Models */,
+				A00000000000000000000303 /* Runtime */,
+				A00000000000000000000304 /* Integrations */,
+				A00000000000000000000305 /* Views */,
 			);
 			path = Sources;
+			sourceTree = "<group>";
+		};
+		A00000000000000000000301 /* App */ = {
+			isa = PBXGroup;
+			children = (
+				A00000000000000000000201 /* DevLauncherApp.swift */,
+				A00000000000000000000202 /* LauncherMenuCommands.swift */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		A00000000000000000000302 /* Models */ = {
+			isa = PBXGroup;
+			children = (
+				A00000000000000000000205 /* LauncherModel.swift */,
+				A00000000000000000000203 /* Project.swift */,
+				A00000000000000000000204 /* ProjectFiles.swift */,
+			);
+			path = Models;
+			sourceTree = "<group>";
+		};
+		A00000000000000000000303 /* Runtime */ = {
+			isa = PBXGroup;
+			children = (
+				A00000000000000000000206 /* ManagedProcess.swift */,
+				A00000000000000000000209 /* NVM.swift */,
+				A00000000000000000000207 /* ProcessSupervisor.swift */,
+				A00000000000000000000208 /* RunOutput.swift */,
+				A0000000000000000000020A /* TCPPortStatus.swift */,
+			);
+			path = Runtime;
+			sourceTree = "<group>";
+		};
+		A00000000000000000000304 /* Integrations */ = {
+			isa = PBXGroup;
+			children = (
+				A0000000000000000000020B /* ProjectGit.swift */,
+				A0000000000000000000020C /* ProjectIDE.swift */,
+				A0000000000000000000020D /* ProjectTerminal.swift */,
+			);
+			path = Integrations;
+			sourceTree = "<group>";
+		};
+		A00000000000000000000305 /* Views */ = {
+			isa = PBXGroup;
+			children = (
+				A0000000000000000000020E /* MainView.swift */,
+				A00000000000000000000306 /* DesignSystem */,
+				A00000000000000000000307 /* Sidebar */,
+				A00000000000000000000308 /* Detail */,
+				A00000000000000000000309 /* Sheets */,
+				A0000000000000000000030A /* Settings */,
+				A0000000000000000000030B /* MenuBar */,
+			);
+			path = Views;
+			sourceTree = "<group>";
+		};
+		A00000000000000000000306 /* DesignSystem */ = {
+			isa = PBXGroup;
+			children = (
+				A0000000000000000000020F /* LauncherPalette.swift */,
+				A00000000000000000000210 /* SharedControls.swift */,
+			);
+			path = DesignSystem;
+			sourceTree = "<group>";
+		};
+		A00000000000000000000307 /* Sidebar */ = {
+			isa = PBXGroup;
+			children = (
+				A00000000000000000000211 /* ProjectSidebarView.swift */,
+				A00000000000000000000212 /* ProjectRowView.swift */,
+			);
+			path = Sidebar;
+			sourceTree = "<group>";
+		};
+		A00000000000000000000308 /* Detail */ = {
+			isa = PBXGroup;
+			children = (
+				A00000000000000000000213 /* ProjectDetailView.swift */,
+				A00000000000000000000214 /* GitToolbarView.swift */,
+				A00000000000000000000215 /* ConsoleView.swift */,
+			);
+			path = Detail;
+			sourceTree = "<group>";
+		};
+		A00000000000000000000309 /* Sheets */ = {
+			isa = PBXGroup;
+			children = (
+				A00000000000000000000218 /* GitSheets.swift */,
+				A00000000000000000000216 /* ImportSheet.swift */,
+				A00000000000000000000217 /* ProjectEditorSheet.swift */,
+			);
+			path = Sheets;
+			sourceTree = "<group>";
+		};
+		A0000000000000000000030A /* Settings */ = {
+			isa = PBXGroup;
+			children = (
+				A00000000000000000000219 /* NVMSettingsView.swift */,
+			);
+			path = Settings;
+			sourceTree = "<group>";
+		};
+		A0000000000000000000030B /* MenuBar */ = {
+			isa = PBXGroup;
+			children = (
+				A0000000000000000000021A /* MenuBarPopoverView.swift */,
+			);
+			path = MenuBar;
 			sourceTree = "<group>";
 		};
 		A000000000000000000000F2 /* Resources */ = {
@@ -159,18 +289,32 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				A000000000000000000000C8 /* ConfigurationViews.swift in Sources */,
-				A000000000000000000000C9 /* DevLauncherApp.swift in Sources */,
-				A000000000000000000000CA /* LauncherModel.swift in Sources */,
-				A000000000000000000000CB /* MainView.swift in Sources */,
-				A000000000000000000000CC /* ManagedProcess.swift in Sources */,
-				A000000000000000000000CD /* NVM.swift in Sources */,
-				A000000000000000000000CE /* Projects.swift in Sources */,
-				A000000000000000000000CF /* RunOutput.swift in Sources */,
-				A000000000000000000000D0 /* ProjectTerminal.swift in Sources */,
-				A000000000000000000000D1 /* ProcessSupervisor.swift in Sources */,
-				A000000000000000000000D2 /* TCPPortStatus.swift in Sources */,
-				A000000000000000000000D3 /* ProjectIDE.swift in Sources */,
+				A00000000000000000000101 /* DevLauncherApp.swift in Sources */,
+				A00000000000000000000102 /* LauncherMenuCommands.swift in Sources */,
+				A00000000000000000000103 /* Project.swift in Sources */,
+				A00000000000000000000104 /* ProjectFiles.swift in Sources */,
+				A00000000000000000000105 /* LauncherModel.swift in Sources */,
+				A00000000000000000000106 /* ManagedProcess.swift in Sources */,
+				A00000000000000000000107 /* ProcessSupervisor.swift in Sources */,
+				A00000000000000000000108 /* RunOutput.swift in Sources */,
+				A00000000000000000000109 /* NVM.swift in Sources */,
+				A0000000000000000000010A /* TCPPortStatus.swift in Sources */,
+				A0000000000000000000010B /* ProjectGit.swift in Sources */,
+				A0000000000000000000010C /* ProjectIDE.swift in Sources */,
+				A0000000000000000000010D /* ProjectTerminal.swift in Sources */,
+				A0000000000000000000010E /* MainView.swift in Sources */,
+				A0000000000000000000010F /* LauncherPalette.swift in Sources */,
+				A00000000000000000000110 /* SharedControls.swift in Sources */,
+				A00000000000000000000111 /* ProjectSidebarView.swift in Sources */,
+				A00000000000000000000112 /* ProjectRowView.swift in Sources */,
+				A00000000000000000000113 /* ProjectDetailView.swift in Sources */,
+				A00000000000000000000114 /* GitToolbarView.swift in Sources */,
+				A00000000000000000000115 /* ConsoleView.swift in Sources */,
+				A00000000000000000000116 /* ImportSheet.swift in Sources */,
+				A00000000000000000000117 /* ProjectEditorSheet.swift in Sources */,
+				A00000000000000000000118 /* GitSheets.swift in Sources */,
+				A00000000000000000000119 /* NVMSettingsView.swift in Sources */,
+				A0000000000000000000011A /* MenuBarPopoverView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -210,13 +354,13 @@
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 8;
-				DEVELOPMENT_TEAM = CE36RXM2LQ;
+				DEVELOPMENT_TEAM = 29CYFT8YUF;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "Dev Launcher";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
-				INFOPLIST_KEY_NSAppleEventsUsageDescription = "Dev Launcher 需要打开所选终端，在项目目录中运行 Codex CLI。";
+				INFOPLIST_KEY_NSAppleEventsUsageDescription = "Dev Launcher 需要打开所选终端，在项目目录中打开终端或运行 AI CLI。";
 				MARKETING_VERSION = 1.0.7;
 				PRODUCT_BUNDLE_IDENTIFIER = local.devlauncher.mac;
 				PRODUCT_NAME = "Dev Launcher";
@@ -232,13 +376,13 @@
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 8;
-				DEVELOPMENT_TEAM = CE36RXM2LQ;
+				DEVELOPMENT_TEAM = 29CYFT8YUF;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "Dev Launcher";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
-				INFOPLIST_KEY_NSAppleEventsUsageDescription = "Dev Launcher 需要打开所选终端，在项目目录中运行 Codex CLI。";
+				INFOPLIST_KEY_NSAppleEventsUsageDescription = "Dev Launcher 需要打开所选终端，在项目目录中打开终端或运行 AI CLI。";
 				MARKETING_VERSION = 1.0.7;
 				PRODUCT_BUNDLE_IDENTIFIER = local.devlauncher.mac;
 				PRODUCT_NAME = "Dev Launcher";
@@ -262,7 +406,7 @@
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				A0000000000000000000000E /* Debug */,
-				A0000000000000000000000F /* Release */,
+				A000000000000000000000F /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

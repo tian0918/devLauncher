@@ -20,6 +20,7 @@ enum SpawnFailure: LocalizedError {
 /// Owns the group leader until the whole group has been signalled and its output drained.
 final class ManagedProcess: @unchecked Sendable {
     private let queue = DispatchQueue(label: "devlauncher.process")
+    private let fdLock = NSLock()
     private let pid: pid_t
     private let outputFD: Int32
     private let supervised: Bool
@@ -27,21 +28,60 @@ final class ManagedProcess: @unchecked Sendable {
     private let onOutput: @Sendable (Data) -> Void
     private let onExit: @Sendable (ProcessOutcome) -> Void
     private var reader: DispatchSourceRead?
-    private var timer: DispatchSourceTimer?
+    private var exitSource: DispatchSourceProcess?
+    private var timeoutTimer: DispatchSourceTimer?
+    private var shutdownTimer: DispatchSourceTimer?
     private var stopDeadline: DispatchTime?
     private var killDeadline: DispatchTime?
-    private var timeoutDeadline: DispatchTime?
     private var stopRequested = false
     private var finished = false
 
     static func environment(shellPath: String? = nil) -> [String: String] {
         var environment = ProcessInfo.processInfo.environment
-        var path = (shellPath ?? environment["PATH"] ?? "").split(separator: ":").map(String.init)
-        for directory in ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"]
-        where !path.contains(directory) {
-            path.append(directory)
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let userFallbacks = [
+            home.appendingPathComponent(".local/bin").path,
+            home.appendingPathComponent(".cargo/bin").path,
+            home.appendingPathComponent(".pyenv/shims").path,
+            home.appendingPathComponent(".mise/shims").path,
+            home.appendingPathComponent(".asdf/shims").path,
+            "/opt/homebrew/bin",
+            "/opt/homebrew/sbin",
+            "/usr/local/bin",
+            "/usr/local/sbin",
+        ]
+        let systemFallbacks = ["/usr/bin", "/bin", "/usr/sbin", "/sbin"]
+
+        var ordered: [String] = []
+        var seen: Set<String> = []
+        func appendUnique(_ entries: [String]) {
+            for entry in entries where !entry.isEmpty && seen.insert(entry).inserted {
+                ordered.append(entry)
+            }
         }
-        environment["PATH"] = path.joined(separator: ":")
+
+        if let shellPath, !shellPath.isEmpty {
+            appendUnique(shellPath.split(separator: ":").map(String.init))
+            appendUnique(userFallbacks)
+            appendUnique(systemFallbacks)
+        } else {
+            let inherited = (environment["PATH"] ?? "").split(separator: ":").map(String.init)
+            let defaultSystemEntries: Set<String> = [
+                "/usr/bin", "/bin", "/usr/sbin", "/sbin", "/System/Cryptexes/App/usr/bin",
+            ]
+            let isBareSystemPath = inherited.allSatisfy { defaultSystemEntries.contains($0) }
+            if isBareSystemPath {
+                appendUnique(userFallbacks)
+                appendUnique(inherited)
+                appendUnique(systemFallbacks)
+            } else {
+                appendUnique(inherited)
+                appendUnique(userFallbacks)
+                appendUnique(systemFallbacks)
+            }
+        }
+
+        environment["PATH"] = ordered.joined(separator: ":")
         return environment
     }
 
@@ -62,19 +102,34 @@ final class ManagedProcess: @unchecked Sendable {
         supervised = projectLock != nil
         self.onOutput = onOutput
         self.onExit = onExit
-        timeoutDeadline = timeout.map { DispatchTime.now() + $0 }
 
         let reader = DispatchSource.makeReadSource(fileDescriptor: outputFD, queue: queue)
-        reader.setEventHandler { [weak self] in self?.drainOutput() }
+        reader.setEventHandler { [weak self] in self?.drainOutput(untilEOF: false) }
         reader.setCancelHandler { [outputFD] in close(outputFD) }
         self.reader = reader
 
-        let timer = DispatchSource.makeTimerSource(queue: queue)
-        timer.schedule(deadline: .now(), repeating: .milliseconds(60), leeway: .milliseconds(15))
-        timer.setEventHandler { [weak self] in self?.checkExit() }
-        self.timer = timer
+        let exitSource = DispatchSource.makeProcessSource(identifier: pid, eventMask: .exit, queue: queue)
+        exitSource.setEventHandler { [weak self] in self?.checkExit() }
+        self.exitSource = exitSource
+
+        if let timeout {
+            let timer = DispatchSource.makeTimerSource(queue: queue)
+            timer.schedule(deadline: .now() + timeout, leeway: .milliseconds(20))
+            timer.setEventHandler { [weak self] in
+                guard let self, !self.finished else { return }
+                self.timeoutTimer?.cancel()
+                self.timeoutTimer = nil
+                self.stopRequested = true
+                self.terminateGroup()
+            }
+            self.timeoutTimer = timer
+            timer.resume()
+        }
+
         reader.resume()
-        timer.resume()
+        exitSource.resume()
+        // Catch processes that exited in the window between posix_spawn and exitSource registration.
+        queue.async { [weak self] in self?.checkExit() }
     }
 
     func stop() {
@@ -87,8 +142,34 @@ final class ManagedProcess: @unchecked Sendable {
 
     deinit {
         closeKeepAlive()
-        reader?.cancel()
-        timer?.cancel()
+        let pid = self.pid
+        let supervised = self.supervised
+        let wasFinished = self.finished
+        let reader = self.reader
+        let exitSource = self.exitSource
+        let timeoutTimer = self.timeoutTimer
+        let shutdownTimer = self.shutdownTimer
+        queue.async {
+            reader?.cancel()
+            exitSource?.cancel()
+            timeoutTimer?.cancel()
+            shutdownTimer?.cancel()
+            if !wasFinished {
+                if !supervised {
+                    kill(-pid, SIGTERM)
+                }
+                _ = waitpid(pid, nil, WNOHANG)
+            }
+        }
+    }
+
+    private func startShutdownPollingIfNeeded() {
+        guard shutdownTimer == nil, !finished else { return }
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now() + .milliseconds(60), repeating: .milliseconds(60), leeway: .milliseconds(15))
+        timer.setEventHandler { [weak self] in self?.checkExit() }
+        shutdownTimer = timer
+        timer.resume()
     }
 
     private func terminateGroup() {
@@ -99,14 +180,11 @@ final class ManagedProcess: @unchecked Sendable {
         guard stopDeadline == nil else { return }
         kill(-pid, SIGTERM)
         stopDeadline = .now() + .seconds(3)
+        startShutdownPollingIfNeeded()
     }
 
     private func checkExit() {
-        if let deadline = timeoutDeadline, deadline <= .now() {
-            timeoutDeadline = nil
-            stopRequested = true
-            terminateGroup()
-        }
+        guard !finished else { return }
 
         var info = siginfo_t()
         let result = waitid(P_PID, id_t(pid), &info, WEXITED | WNOHANG | WNOWAIT)
@@ -124,18 +202,22 @@ final class ManagedProcess: @unchecked Sendable {
             return
         }
 
-        if leaderExited { terminateGroup() }
+        if leaderExited {
+            terminateGroup()
+            startShutdownPollingIfNeeded()
+        }
         guard killDeadline == nil, let deadline = stopDeadline, deadline <= .now() else { return }
         kill(-pid, SIGKILL)
         killDeadline = .now() + .milliseconds(500)
+        startShutdownPollingIfNeeded()
     }
 
     private func groupHasOtherMembers() -> Bool {
-        var members = [pid_t](repeating: 0, count: 16)
+        var members = [pid_t](repeating: 0, count: 32)
         let bytes = members.withUnsafeMutableBytes { buffer in
             proc_listpids(UInt32(PROC_PGRP_ONLY), UInt32(pid), buffer.baseAddress, Int32(buffer.count))
         }
-        guard bytes > 0 else { return true }
+        guard bytes > 0 else { return false }
         let count = Int(bytes) / MemoryLayout<pid_t>.stride
         return members.prefix(count).contains { $0 > 0 && $0 != pid }
     }
@@ -144,10 +226,14 @@ final class ManagedProcess: @unchecked Sendable {
         while waitpid(pid, nil, 0) == -1 && errno == EINTR {}
     }
 
-    private func drainOutput() {
+    private func drainOutput(untilEOF: Bool) {
         var bytes = [UInt8](repeating: 0, count: 8192)
-        // Yield periodically so a noisy command cannot starve process control.
-        for _ in 0..<32 {
+        // Yield periodically during live streaming so a noisy command cannot starve process control,
+        // while draining completely to EOF on process exit so final stack traces are never truncated.
+        let maxReads = untilEOF ? Int.max : 32
+        var reads = 0
+        while reads < maxReads {
+            reads += 1
             let count = bytes.withUnsafeMutableBytes { read(outputFD, $0.baseAddress, $0.count) }
             if count > 0 {
                 onOutput(Data(bytes.prefix(count)))
@@ -162,12 +248,17 @@ final class ManagedProcess: @unchecked Sendable {
     }
 
     private func finish(exitCode: Int32, signal: Int32?) {
+        guard !finished else { return }
         finished = true
         closeKeepAlive()
-        timer?.cancel()
-        timer = nil
+        exitSource?.cancel()
+        exitSource = nil
+        timeoutTimer?.cancel()
+        timeoutTimer = nil
+        shutdownTimer?.cancel()
+        shutdownTimer = nil
         if reader != nil {
-            drainOutput()
+            drainOutput(untilEOF: true)
             reader?.cancel()
             reader = nil
         }
@@ -175,9 +266,11 @@ final class ManagedProcess: @unchecked Sendable {
     }
 
     private func closeKeepAlive() {
-        guard let fd = keepAliveFD else { return }
+        fdLock.lock()
+        let fd = keepAliveFD
         keepAliveFD = nil
-        close(fd)
+        fdLock.unlock()
+        if let fd { close(fd) }
     }
 
     private static func spawn(

@@ -1,53 +1,9 @@
 import Foundation
 
-enum ProjectKind: String, Codable, Sendable {
-    case node = "Node.js"
-    case python = "Python"
-}
-
-struct Project: Codable, Identifiable, Equatable {
-    let id: UUID
-    var path: String
-    var name: String
-    var listAlias: String?
-    var nodeRequirement: String?
-    var nodeVersion: String?
-    var command: String
-    var launchPort: UInt16?
-    private var projectKind: ProjectKind?
-
-    var listName: String { listAlias ?? name }
-    var kind: ProjectKind { projectKind ?? .node }
-    var hasLaunchCommand: Bool { !command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-
-    init(candidate: ProjectCandidate) {
-        id = UUID()
-        path = candidate.path
-        name = candidate.name
-        nodeRequirement = candidate.nodeRequirement
-        command = candidate.suggestedCommand
-        if candidate.kind == .python { projectKind = .python }
-    }
-}
-
-struct ProjectCandidate: Identifiable, Sendable, Equatable {
-    let path: String
-    let name: String
-    let kind: ProjectKind
-    let nodeRequirement: String?
-    let suggestedCommand: String
-
-    var id: String { path }
-}
-
-struct ScanResult: Sendable {
-    var candidates: [ProjectCandidate] = []
-    var skipped: [String] = []
-}
-
 enum ProjectFiles {
     private struct Manifest: Decodable {
         var name: String?
+        var packageManager: String?
         var scripts: [String: String]?
         var engines: [String: String]?
         var dependencies: [String: String]?
@@ -55,10 +11,34 @@ enum ProjectFiles {
     }
 
     private static let ignored: Set<String> = [
-        "node_modules", "dist", "build", "out", "coverage", "DerivedData", "venv", "__pycache__", "site-packages"
+        "node_modules", "bower_components", "jspm_packages",
+        "dist", "build", "out", "target", "coverage", "DerivedData",
+        "Pods", "Carthage", "vendor",
+        "venv", "env", "virtualenv", "__pycache__", "site-packages", "eggs",
     ]
     private static let pythonMarkers: Set<String> = ["pyproject.toml", "requirements.txt", "setup.py", "Pipfile", "manage.py"]
     private static let pythonEntrypoints = ["manage.py", "__main__.py", "main.py", "app.py"]
+
+    private static let portVarRegex = try! NSRegularExpression(pattern: #"\$(?:PORT\b|\{PORT\b)"#)
+    private static let envAssignRegex = try! NSRegularExpression(pattern: #"^[A-Za-z_][A-Za-z0-9_]*="#)
+    private static let shortPortRegex = try! NSRegularExpression(pattern: #"^-p[0-9]+$"#)
+    private static let pythonVersionedRegex = try! NSRegularExpression(pattern: #"^python3\.\d+$"#)
+    private static let installHintRegex = try! NSRegularExpression(
+        pattern: #"(?m)\b(?:run|execute|try|using|with)\s+[`'"“‘]?(?:npm|pnpm|yarn|bun) (?:install|i)\b|package\.json exists, but node_modules missing"#
+    )
+    private static let missingPackagesRegex = try! NSRegularExpression(
+        pattern: #"(?i)cannot find (?:module|package) ['"]([^'"]+)['"]"#
+    )
+    private static let commandNotFoundRegex = try! NSRegularExpression(
+        pattern: #"(?m)^(?:sh|zsh|bash):[^\n]*(?:command not found|: not found)\b"#
+    )
+    private static let pkgMgrNotFoundRegex = try! NSRegularExpression(
+        pattern: #"(?m)^.*(?:command not found: (?:npm|pnpm|yarn|bun)\b|\b(?:npm|pnpm|yarn|bun): (?:command )?not found)"#
+    )
+
+    private static func matches(_ regex: NSRegularExpression, in text: String) -> Bool {
+        regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil
+    }
 
     static func canonicalPath(_ url: URL) -> String {
         url.standardizedFileURL.resolvingSymlinksInPath().path
@@ -74,15 +54,60 @@ enum ProjectFiles {
             && FileManager.default.isReadableFile(atPath: url.path)
     }
 
+    static func detectPackageManager(at projectPath: String, manifestPackageManager: String? = nil) -> NodePackageManager {
+        let directory = URL(fileURLWithPath: projectPath, isDirectory: true)
+        let declared: String? = manifestPackageManager ?? {
+            guard let data = try? Data(contentsOf: directory.appendingPathComponent("package.json")),
+                  let manifest = try? JSONDecoder().decode(Manifest.self, from: data) else { return nil }
+            return manifest.packageManager
+        }()
+
+        if let raw = declared?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(), !raw.isEmpty {
+            let prefix = raw.split(separator: "@", maxSplits: 1).first.map(String.init) ?? raw
+            if let manager = NodePackageManager(rawValue: prefix) {
+                return manager
+            }
+        }
+
+        let fileManager = FileManager.default
+        var current = directory
+        for _ in 0..<4 {
+            if fileManager.fileExists(atPath: current.appendingPathComponent("pnpm-lock.yaml").path) {
+                return .pnpm
+            }
+            if fileManager.fileExists(atPath: current.appendingPathComponent("yarn.lock").path) {
+                return .yarn
+            }
+            if fileManager.fileExists(atPath: current.appendingPathComponent("bun.lock").path)
+                || fileManager.fileExists(atPath: current.appendingPathComponent("bun.lockb").path) {
+                return .bun
+            }
+            if fileManager.fileExists(atPath: current.appendingPathComponent("package-lock.json").path)
+                || fileManager.fileExists(atPath: current.appendingPathComponent("npm-shrinkwrap.json").path) {
+                return .npm
+            }
+            if fileManager.fileExists(atPath: current.appendingPathComponent(".git").path) {
+                break
+            }
+            let parent = current.deletingLastPathComponent()
+            if parent.path == current.path || ["/Users", "/var", "/tmp", "/private", "/Volumes", "/"].contains(parent.path) {
+                break
+            }
+            current = parent
+        }
+        return .npm
+    }
+
     private static func nodeCandidate(at url: URL) throws -> ProjectCandidate {
         let directory = URL(fileURLWithPath: canonicalPath(url.deletingLastPathComponent()))
         let manifest = try JSONDecoder().decode(Manifest.self, from: Data(contentsOf: url))
         let name = manifest.name?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let packageManager = detectPackageManager(at: directory.path, manifestPackageManager: manifest.packageManager)
         let suggestedCommand: String
         if manifest.scripts?["dev"] != nil {
-            suggestedCommand = "npm run dev"
+            suggestedCommand = packageManager.runScriptCommand("dev")
         } else if manifest.scripts?["start"] != nil {
-            suggestedCommand = "npm run start"
+            suggestedCommand = packageManager.runScriptCommand("start")
         } else {
             suggestedCommand = ""
         }
@@ -131,6 +156,22 @@ enum ProjectFiles {
             .first { FileManager.default.isExecutableFile(atPath: $0.appendingPathComponent("bin/python3").path) }
     }
 
+    static func pythonBootstrapArguments(command: String, token: String) -> [String] {
+        ["-fc", pythonBootstrap, "devlauncher", command, token]
+    }
+
+    private static let pythonBootstrap = #"""
+    py_ver="$(python3 --version 2>/dev/null || python --version 2>/dev/null || true)"
+    if [[ -z "$py_ver" ]]; then
+      py_ver="Python"
+    fi
+    if [[ -n "${VIRTUAL_ENV-}" ]]; then
+      py_ver="${py_ver} (${VIRTUAL_ENV:t})"
+    fi
+    printf '%s\tRUNTIME\t%s\n' "$2" "$py_ver"
+    exec /bin/zsh -fc "$1"
+    """#
+
     static func launchCommand(for project: Project) -> String {
         let trimmed = project.command.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let port = project.launchPort, port != 0, !trimmed.isEmpty else { return project.command }
@@ -159,7 +200,7 @@ enum ProjectFiles {
     }
 
     private static func referencesPortVariable(_ command: String) -> Bool {
-        command.range(of: #"\$(?:PORT\b|\{PORT\b)"#, options: .regularExpression) != nil
+        matches(portVarRegex, in: command)
     }
 
     private static func simpleShellTokens(_ command: String) -> [String]? {
@@ -246,13 +287,13 @@ enum ProjectFiles {
     }
 
     private static func isEnvAssignment(_ token: String) -> Bool {
-        token.range(of: #"^[A-Za-z_][A-Za-z0-9_]*="#, options: .regularExpression) != nil
+        matches(envAssignRegex, in: token)
     }
 
     private static func hasPortFlag(_ args: [String]) -> Bool {
         args.contains { token in
             token == "--port" || token == "-p" || token.hasPrefix("--port=") || token.hasPrefix("-p=")
-                || token.range(of: #"^-p[0-9]+$"#, options: .regularExpression) != nil
+                || matches(shortPortRegex, in: token)
         }
     }
 
@@ -280,7 +321,7 @@ enum ProjectFiles {
                 scriptName = beforeSeparator.dropFirst().first { !$0.hasPrefix("-") }
             } else if executable == "npm", beforeSeparator.first == "start" {
                 scriptName = "start"
-            } else if (executable == "pnpm" || executable == "yarn"),
+            } else if ["pnpm", "yarn", "bun"].contains(executable),
                       let candidate = beforeSeparator.first, !candidate.hasPrefix("-"),
                       scripts?[candidate] != nil {
                 scriptName = candidate
@@ -312,7 +353,12 @@ enum ProjectFiles {
                 while let flag = slice.first, ["-y", "--yes", "--no-install"].contains(flag) {
                     slice = slice.dropFirst()
                 }
-            } else if ["pnpm", "yarn"].contains(runner), slice.dropFirst().first == "exec" {
+            } else if ["npm", "pnpm", "yarn"].contains(runner), slice.dropFirst().first == "exec" {
+                slice = slice.dropFirst(2)
+                if runner == "npm", slice.first == "--" {
+                    slice = slice.dropFirst()
+                }
+            } else if runner == "bun", slice.dropFirst().first == "x" {
                 slice = slice.dropFirst(2)
             }
         }
@@ -405,7 +451,7 @@ enum ProjectFiles {
             return ["--server.port", String(port)]
         case "gunicorn":
             guard !args.contains(where: {
-                $0 == "-b" || $0 == "--bind" || $0.hasPrefix("-b=") || $0.hasPrefix("--bind=")
+                $0 == "-b" || $0 == "--bind" || $0.hasPrefix("-b") || $0.hasPrefix("--bind=")
             }) else { return nil }
             return ["--bind", "127.0.0.1:\(port)"]
         case "http.server":
@@ -416,8 +462,7 @@ enum ProjectFiles {
     }
 
     private static func isPythonExecutable(_ name: String) -> Bool {
-        name == "python" || name == "python3"
-            || name.range(of: #"^python3\.\d+$"#, options: .regularExpression) != nil
+        name == "python" || name == "python3" || matches(pythonVersionedRegex, in: name)
     }
 
     private static func hasDjangoAddrPort(_ args: [String]) -> Bool {
@@ -458,13 +503,11 @@ enum ProjectFiles {
               let manifest = try? JSONDecoder().decode(Manifest.self, from: data) else { return false }
 
         let output = log.lowercased()
-        if output.range(of: #"(?m)\b(?:run|execute|try|using|with)\s+[`'"“‘]?npm (?:install|i)\b|package\.json exists, but node_modules missing"#,
-                        options: .regularExpression) != nil { return true }
+        if matches(installHintRegex, in: output) { return true }
 
         let dependencies = Set((manifest.dependencies ?? [:]).keys).union((manifest.devDependencies ?? [:]).keys)
-        let missingPackages = try! NSRegularExpression(pattern: #"(?i)cannot find (?:module|package) ['"]([^'"]+)['"]"#)
         let whole = NSRange(log.startIndex..., in: log)
-        for match in missingPackages.matches(in: log, range: whole) {
+        for match in missingPackagesRegex.matches(in: log, range: whole) {
             guard let range = Range(match.range(at: 1), in: log) else { continue }
             let specifier = log[range]
             guard !specifier.hasPrefix("."), !specifier.hasPrefix("/") else { continue }
@@ -473,18 +516,22 @@ enum ProjectFiles {
             if dependencies.contains(name) { return true }
         }
 
-        guard output.range(of: #"(?m)^(?:sh|zsh|bash):[^\n]*(?:command not found|: not found)\b"#,
-                           options: .regularExpression) != nil,
-              output.range(of: #"(?m)^.*(?:command not found: npm\b|\bnpm: (?:command )?not found)"#,
-                           options: .regularExpression) == nil else { return false }
+        guard matches(commandNotFoundRegex, in: output),
+              !matches(pkgMgrNotFoundRegex, in: output) else { return false }
+
+        let boundaryRoots: Set<String> = ["/Users", "/var", "/tmp", "/private", "/Volumes", "/"]
+        let fileManager = FileManager.default
         return dependencies.contains { package in
             var parent = directory
-            while true {
-                let manifest = parent.appendingPathComponent("node_modules/\(package)/package.json")
-                if FileManager.default.isReadableFile(atPath: manifest.path) { return false }
-                if parent.path == "/" || parent.path.isEmpty { return true }
-                parent.deleteLastPathComponent()
+            for _ in 0..<8 {
+                let pkgManifest = parent.appendingPathComponent("node_modules/\(package)/package.json")
+                if fileManager.isReadableFile(atPath: pkgManifest.path) { return false }
+                if fileManager.fileExists(atPath: parent.appendingPathComponent(".git").path) { return true }
+                let next = parent.deletingLastPathComponent()
+                if next.path == parent.path || boundaryRoots.contains(next.path) { return true }
+                parent = next
             }
+            return true
         }
     }
 
@@ -571,34 +618,5 @@ enum ProjectFiles {
             return order == .orderedSame ? $0.path < $1.path : order == .orderedAscending
         }
         return result
-    }
-}
-
-struct SavedState: Codable {
-    var projects: [Project] = []
-    var nvmScript: String?
-}
-
-struct StateFile {
-    let url: URL
-
-    static var local: StateFile {
-        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        return StateFile(url: support.appendingPathComponent("DevLauncher/projects.json"))
-    }
-
-    func load() throws -> SavedState {
-        do {
-            return try JSONDecoder().decode(SavedState.self, from: Data(contentsOf: url))
-        } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
-            return SavedState()
-        }
-    }
-
-    func save(_ state: SavedState) throws {
-        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try encoder.encode(state).write(to: url, options: .atomic)
     }
 }
